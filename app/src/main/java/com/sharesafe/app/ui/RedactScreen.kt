@@ -438,6 +438,13 @@ private fun SelectionBar(
                 )
             }
         }
+        // For multi-selections show the shared override if uniform, else the
+        // session default — the slider still writes one value to all selected.
+        val shownStrength = if (single != null) {
+            single.strengthOverride ?: defaultStrength
+        } else {
+            selected.map { it.strengthOverride }.distinct().singleOrNull() ?: defaultStrength
+        }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 "Effect",
@@ -446,7 +453,7 @@ private fun SelectionBar(
                 modifier = Modifier.width(52.dp),
             )
             Slider(
-                value = single?.strengthOverride ?: defaultStrength,
+                value = shownStrength,
                 onValueChange = onStrength,
                 valueRange = ImageRedactor.MIN_STRENGTH..ImageRedactor.MAX_STRENGTH,
                 colors = SliderDefaults.colors(
@@ -457,7 +464,7 @@ private fun SelectionBar(
                 modifier = Modifier.weight(1f),
             )
             Text(
-                "%.1fx".format(single?.strengthOverride ?: defaultStrength),
+                "%.1fx".format(shownStrength),
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.width(38.dp),
