@@ -30,17 +30,26 @@ data class RedactRegion(
     val enabled: Boolean = true,
     /** null = follow the session default style. */
     val styleOverride: RedactStyle? = null,
+    /** null = follow the session default strength (1.0). */
+    val strengthOverride: Float? = null,
     val detail: String = "",
 ) {
     val effectiveStyleKey get() = id
 
     companion object {
-        fun new(rect: Rect, kind: RegionKind, style: RedactStyle? = null, detail: String = "") =
+        fun new(
+            rect: Rect,
+            kind: RegionKind,
+            style: RedactStyle? = null,
+            strength: Float? = null,
+            detail: String = "",
+        ) =
             RedactRegion(
                 id = UUID.randomUUID().toString().take(12),
                 rect = Rect(rect),
                 kind = kind,
                 styleOverride = style,
+                strengthOverride = strength,
                 detail = detail,
             )
     }

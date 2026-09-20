@@ -16,6 +16,7 @@ object ImageRedactor {
         bitmap: Bitmap,
         regions: List<RedactRegion>,
         defaultStyle: RedactStyle,
+        defaultStrength: Float = 1f,
     ): Bitmap {
         val enabled = regions.filter { it.enabled }
         val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
@@ -24,14 +25,19 @@ object ImageRedactor {
         // Blackout last so cosmetic overlaps can never weaken opaque bars.
         enabled.sortedBy { if ((it.styleOverride ?: defaultStyle) == RedactStyle.BLACK) 1 else 0 }
             .forEach { region ->
+                val strength = (region.strengthOverride ?: defaultStrength)
+                    .coerceIn(MIN_STRENGTH, MAX_STRENGTH)
                 when (region.styleOverride ?: defaultStyle) {
                     RedactStyle.BLACK -> opaqueInPlace(result, region.rect)
-                    RedactStyle.PIXELATE -> pixelateInPlace(result, canvas, region.rect)
-                    RedactStyle.BLUR -> blurInPlace(result, canvas, region.rect)
+                    RedactStyle.PIXELATE -> pixelateInPlace(result, canvas, region.rect, strength)
+                    RedactStyle.BLUR -> blurInPlace(result, canvas, region.rect, strength)
                 }
             }
         return result
     }
+
+    const val MIN_STRENGTH = 0.5f
+    const val MAX_STRENGTH = 4f
 
     private fun opaqueInPlace(bitmap: Bitmap, rect: Rect, color: Int = Color.BLACK) {
         val safe = rect.clippedTo(bitmap) ?: return
@@ -41,9 +47,9 @@ object ImageRedactor {
         }
     }
 
-    private fun pixelateInPlace(result: Bitmap, canvas: Canvas, rect: Rect) {
+    private fun pixelateInPlace(result: Bitmap, canvas: Canvas, rect: Rect, strength: Float) {
         val safe = rect.clippedTo(result) ?: return
-        val blockSize = 12
+        val blockSize = (12 * strength).toInt().coerceIn(4, 96)
         if (safe.width() < 2 || safe.height() < 2) return
         if (safe.width() < blockSize * 2 || safe.height() < blockSize * 2) {
             solidFill(result, canvas, safe)
@@ -52,10 +58,11 @@ object ImageRedactor {
         scaleRegion(result, canvas, safe, divisor = blockSize, filterUpscale = false)
     }
 
-    private fun blurInPlace(result: Bitmap, canvas: Canvas, rect: Rect) {
+    private fun blurInPlace(result: Bitmap, canvas: Canvas, rect: Rect, strength: Float) {
         val safe = rect.clippedTo(result) ?: return
         if (safe.width() < 2 || safe.height() < 2) return
-        scaleRegion(result, canvas, safe, divisor = 24, filterUpscale = true)
+        scaleRegion(result, canvas, safe, divisor = (24 * strength).toInt().coerceIn(6, 160),
+            filterUpscale = true)
     }
 
     private fun scaleRegion(

@@ -25,11 +25,11 @@ import com.sharesafe.app.ui.theme.ShareSafeTheme
 
 class MainActivity : ComponentActivity() {
 
-    private val incomingImage = androidx.compose.runtime.mutableStateOf<Uri?>(null)
+    private val incomingImages = androidx.compose.runtime.mutableStateOf<List<Uri>>(emptyList())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        incomingImage.value = intent?.extractSharedImage()
+        incomingImages.value = intent?.extractSharedImages().orEmpty()
         enableEdgeToEdge()
         setContent {
             ShareSafeTheme {
@@ -38,8 +38,8 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background,
                 ) {
                     ShareSafeRoot(
-                        incoming = incomingImage.value,
-                        onIncomingConsumed = { incomingImage.value = null },
+                        incoming = incomingImages.value,
+                        onIncomingConsumed = { incomingImages.value = emptyList() },
                     )
                 }
             }
@@ -49,19 +49,11 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         this.intent = intent
-        intent.extractSharedImage()?.let { incomingImage.value = it }
+        intent.extractSharedImages().takeIf { it.isNotEmpty() }
+            ?.let { incomingImages.value = it }
     }
 
-    private fun Intent.extractSharedImage(): Uri? {
-        if (action == Intent.ACTION_SEND) {
-            @Suppress("DEPRECATION")
-            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-            } else {
-                getParcelableExtra(Intent.EXTRA_STREAM)
-            }
-            if (uri != null) return uri
-        }
+    private fun Intent.extractSharedImages(): List<Uri> {
         if (action == Intent.ACTION_SEND_MULTIPLE) {
             @Suppress("DEPRECATION")
             val uris = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -69,23 +61,32 @@ class MainActivity : ComponentActivity() {
             } else {
                 getParcelableArrayListExtra(Intent.EXTRA_STREAM)
             }
-            return uris?.firstOrNull()
+            if (!uris.isNullOrEmpty()) return uris.toList()
         }
-        return null
+        if (action == Intent.ACTION_SEND) {
+            @Suppress("DEPRECATION")
+            val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+            } else {
+                getParcelableExtra(Intent.EXTRA_STREAM)
+            }
+            if (uri != null) return listOf(uri)
+        }
+        return emptyList()
     }
 }
 
 @Composable
-private fun ShareSafeRoot(incoming: Uri?, onIncomingConsumed: () -> Unit) {
+private fun ShareSafeRoot(incoming: List<Uri>, onIncomingConsumed: () -> Unit) {
     val vm: MainViewModel = viewModel()
 
-    val pickImage = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia(),
-    ) { uri -> uri?.let(vm::loadImage) }
+    val pickImages = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9),
+    ) { uris -> if (uris.isNotEmpty()) vm.loadQueue(uris) }
 
     androidx.compose.runtime.LaunchedEffect(incoming) {
-        incoming?.let {
-            vm.loadImage(it)
+        if (incoming.isNotEmpty()) {
+            vm.loadQueue(incoming)
             onIncomingConsumed()
         }
     }
@@ -102,7 +103,7 @@ private fun ShareSafeRoot(incoming: Uri?, onIncomingConsumed: () -> Unit) {
         Screen.HOME -> HomeScreen(
             error = vm.errorMessage,
             onPick = {
-                pickImage.launch(
+                pickImages.launch(
                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
                 )
             },

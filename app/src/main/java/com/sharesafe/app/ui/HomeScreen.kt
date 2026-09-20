@@ -104,10 +104,10 @@ fun HomeScreen(error: String?, onPick: () -> Unit) {
         }
 
         Spacer(Modifier.height(34.dp))
-        GradientButton(text = "Select screenshot", onClick = onPick)
+        GradientButton(text = "Select screenshots", onClick = onPick)
         Spacer(Modifier.height(14.dp))
         Text(
-            "or share an image straight into ShareSafe",
+            "pick up to 9, or share images straight into ShareSafe",
             fontSize = 12.5.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

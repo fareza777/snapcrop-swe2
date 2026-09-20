@@ -90,7 +90,8 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "Redaction is permanent in the export",
+                    "Redaction is permanent in the export" +
+                        if (vm.queueSize > 1) "  •  Image ${vm.queuePos + 1}/${vm.queueSize}" else "",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -254,6 +255,27 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (saveDone) Teal else MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+                if (vm.hasNextInQueue) {
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(Teal, com.sharesafe.app.ui.theme.Cyan)
+                                )
+                            )
+                            .clickable { vm.nextInQueue() }
+                            .padding(horizontal = 18.dp, vertical = 14.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "Next →",
+                            fontSize = 14.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = Color(0xFF06231C),
                         )
                     }
                 }
