@@ -8,6 +8,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitLongPressOrCancellation
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,14 +24,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Redo
+import androidx.compose.material.icons.automirrored.outlined.Undo
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.CropFree
 import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.automirrored.outlined.Undo
+import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.FilterChip
@@ -41,6 +45,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -54,9 +60,9 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
-import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
@@ -66,10 +72,12 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sharesafe.app.MainViewModel
+import com.sharesafe.app.core.ImageRedactor
 import com.sharesafe.app.core.RedactRegion
 import com.sharesafe.app.core.RedactStyle
-import com.sharesafe.app.core.RegionKind
+import com.sharesafe.app.ui.theme.Teal
 import com.sharesafe.app.ui.theme.regionColor
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -79,6 +87,9 @@ private sealed interface GestureMode {
     data object Transform : GestureMode
     data class Move(val regionId: String) : GestureMode
     data class Resize(val regionId: String, val corner: Int) : GestureMode
+    data class CropResize(val corner: Int) : GestureMode
+    data object CropMove : GestureMode
+    data object CropDraw : GestureMode
     data object Idle : GestureMode
 }
 
@@ -86,18 +97,21 @@ private sealed interface GestureMode {
 fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
     val crop = vm.cropRect()
     val src = vm.source
+    val cropEditing = vm.cropEditMode
 
-    val baseBitmap = remember(src, crop) {
+    val baseBitmap = remember(src, crop, cropEditing) {
         if (src == null) null
-        else if (crop.left == 0 && crop.top == 0 &&
-            crop.width() == src.width && crop.height() == src.height
+        else if (cropEditing || (crop.left == 0 && crop.top == 0 &&
+                crop.width() == src.width && crop.height() == src.height)
         ) src
         else Bitmap.createBitmap(src, crop.left, crop.top, crop.width(), crop.height())
     }
 
-    val displayed = if (vm.livePreview) vm.renderedPreview ?: baseBitmap else baseBitmap
+    val displayed = if (!cropEditing && vm.livePreview) {
+        vm.renderedPreview ?: baseBitmap
+    } else baseBitmap
     val enabledCount = vm.regions.count { it.enabled }
-    val selected = vm.regions.firstOrNull { it.id == vm.selectedId }
+    val selected = vm.regions.filter { it.id in vm.selectedIds }
     val kinds = vm.regions.map { it.kind }.distinct()
 
     Column(
@@ -117,13 +131,19 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
             }
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Redact",
+                    if (cropEditing) "Crop" else "Redact",
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "$enabledCount area${if (enabledCount == 1) "" else "s"} protected",
+                    buildString {
+                        if (cropEditing) append("Drag corners to adjust")
+                        else {
+                            append("$enabledCount area${if (enabledCount == 1) "" else "s"} protected")
+                            if (vm.queueSize > 1) append("  •  Image ${vm.queuePos + 1}/${vm.queueSize}")
+                        }
+                    },
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -135,7 +155,27 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                     else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                 )
             }
-            IconButton(onClick = { vm.toggleLivePreview(!vm.livePreview) }) {
+            IconButton(onClick = vm::redo, enabled = vm.redoDepth > 0) {
+                Icon(
+                    Icons.AutoMirrored.Outlined.Redo, "Redo",
+                    tint = if (vm.redoDepth > 0) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                )
+            }
+            IconButton(
+                onClick = {
+                    if (vm.selectedIds.size == vm.regions.size) vm.clearSelection()
+                    else vm.selectAll()
+                },
+                enabled = vm.regions.isNotEmpty() && !cropEditing,
+            ) {
+                Icon(
+                    Icons.Outlined.SelectAll, "Select all",
+                    tint = if (vm.selectedIds.isNotEmpty()) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = { vm.toggleLivePreview(!vm.livePreview) }, enabled = !cropEditing) {
                 Icon(
                     if (vm.livePreview) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
                     "Preview",
@@ -143,10 +183,17 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = { vm.updateCrop(!vm.cropEnabled) }) {
+            IconButton(onClick = { vm.updateCrop(!vm.cropEnabled) }, enabled = !cropEditing) {
                 Icon(
                     Icons.Outlined.CropFree, "Crop bars",
                     tint = if (vm.cropEnabled) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = vm::toggleCropEdit) {
+                Icon(
+                    Icons.Outlined.Crop, "Edit crop",
+                    tint = if (cropEditing) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -165,8 +212,9 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                 RedactCanvas(
                     vm = vm,
                     bitmap = displayed,
-                    cropOriginX = crop.left,
-                    cropOriginY = crop.top,
+                    cropOriginX = if (cropEditing) 0 else crop.left,
+                    cropOriginY = if (cropEditing) 0 else crop.top,
+                    cropEdit = cropEditing,
                 )
             }
         }
@@ -180,17 +228,20 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
         ) {
             Spacer(Modifier.height(12.dp))
 
-            if (selected != null) {
+            if (selected.isNotEmpty() && !cropEditing) {
                 SelectionBar(
-                    region = selected,
+                    selected = selected,
                     defaultStyle = vm.defaultStyle,
-                    onStyle = { vm.setRegionStyle(selected.id, it) },
-                    onToggle = { vm.toggleRegion(selected.id) },
-                    onDelete = { vm.removeRegion(selected.id) },
-                    onClose = { vm.select(null) },
+                    defaultStrength = vm.defaultStrength,
+                    onStyle = { vm.setStyleFor(vm.selectedIds, it) },
+                    onStrength = { vm.setStrengthFor(vm.selectedIds, it) },
+                    onToggle = { vm.setEnabledFor(vm.selectedIds, selected.any { !it.enabled }) },
+                    onDuplicate = vm::duplicateSelected,
+                    onDelete = { vm.removeRegions(vm.selectedIds) },
+                    onClose = vm::clearSelection,
                 )
                 Spacer(Modifier.height(10.dp))
-            } else if (kinds.isNotEmpty()) {
+            } else if (kinds.isNotEmpty() && !cropEditing) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -226,35 +277,70 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                 Spacer(Modifier.height(10.dp))
             }
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
-                    RedactStyle.entries.forEachIndexed { i, style ->
-                        SegmentedButton(
-                            selected = vm.defaultStyle == style,
-                            onClick = { vm.defaultStyle = style },
-                            shape = SegmentedButtonDefaults.itemShape(
-                                index = i,
-                                count = RedactStyle.entries.size,
-                            ),
-                            colors = SegmentedButtonDefaults.colors(
-                                activeContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                                activeContentColor = MaterialTheme.colorScheme.primary,
-                            ),
-                        ) {
-                            Text(style.label, fontSize = 12.sp)
+            if (!cropEditing) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
+                        RedactStyle.entries.forEachIndexed { i, style ->
+                            SegmentedButton(
+                                selected = vm.defaultStyle == style,
+                                onClick = { vm.defaultStyle = style },
+                                shape = SegmentedButtonDefaults.itemShape(
+                                    index = i,
+                                    count = RedactStyle.entries.size,
+                                ),
+                                colors = SegmentedButtonDefaults.colors(
+                                    activeContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                                    activeContentColor = MaterialTheme.colorScheme.primary,
+                                ),
+                            ) {
+                                Text(style.label, fontSize = 12.sp)
+                            }
                         }
                     }
                 }
+                if (selected.isEmpty()) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Effect",
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.width(52.dp),
+                        )
+                        Slider(
+                            value = vm.defaultStrength,
+                            onValueChange = { vm.defaultStrength = it; vm.refreshPreview() },
+                            valueRange = ImageRedactor.MIN_STRENGTH..ImageRedactor.MAX_STRENGTH,
+                            colors = SliderDefaults.colors(
+                                activeTrackColor = Teal,
+                                thumbColor = Teal,
+                                inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+                            ),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "%.1fx".format(vm.defaultStrength),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.width(38.dp),
+                        )
+                    }
+                }
+                Text(
+                    "Drag empty space to cover more. Tap an area to edit, long-press to multi-select.",
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            } else {
+                Text(
+                    "Crop: drag a corner to adjust, drag inside to move, drag outside to redraw.",
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
-            Text(
-                "Drag on the image to cover more. Tap an area to edit it.",
-                fontSize = 11.5.sp,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(top = 8.dp),
-            )
             Spacer(Modifier.height(12.dp))
             GradientButton(
                 text = "Preview & Share  →",
@@ -267,71 +353,121 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
 
 @Composable
 private fun SelectionBar(
-    region: RedactRegion,
+    selected: List<RedactRegion>,
     defaultStyle: RedactStyle,
+    defaultStrength: Float,
     onStyle: (RedactStyle?) -> Unit,
+    onStrength: (Float) -> Unit,
     onToggle: () -> Unit,
+    onDuplicate: () -> Unit,
     onDelete: () -> Unit,
     onClose: () -> Unit,
 ) {
-    Row(
+    val single = selected.singleOrNull()
+    val kindColor = if (single != null) regionColor(single.kind) else MaterialTheme.colorScheme.primary
+    Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(MaterialTheme.colorScheme.surface)
-            .border(1.dp, regionColor(region.kind).copy(alpha = 0.4f), RoundedCornerShape(14.dp))
+            .border(1.dp, kindColor.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
             .padding(horizontal = 12.dp, vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        PillLabel(region.kind.label.uppercase(), regionColor(region.kind))
-        Spacer(Modifier.width(2.dp))
-        RedactStyle.entries.forEach { style ->
-            val active = (region.styleOverride ?: defaultStyle) == style
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(
-                        if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
-                        else Color.Transparent
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            PillLabel(
+                single?.kind?.label?.uppercase() ?: "${selected.size} SELECTED",
+                kindColor,
+            )
+            Spacer(Modifier.width(2.dp))
+            RedactStyle.entries.forEach { style ->
+                val active = (single?.styleOverride ?: defaultStyle) == style
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                            else Color.Transparent
+                        )
+                        .clickable { onStyle(style) }
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        when (style) {
+                            RedactStyle.BLUR -> "B"
+                            RedactStyle.PIXELATE -> "Px"
+                            RedactStyle.BLACK -> "■"
+                        },
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (active) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    .clickable { onStyle(style) }
-                    .padding(horizontal = 8.dp, vertical = 5.dp),
-            ) {
-                Text(
-                    when (style) {
-                        RedactStyle.BLUR -> "B"
-                        RedactStyle.PIXELATE -> "Px"
-                        RedactStyle.BLACK -> "■"
-                    },
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Bold,
-                    color = if (active) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                }
+            }
+            Spacer(Modifier.weight(1f))
+            IconButton(onClick = onToggle, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    if (selected.all { it.enabled }) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
+                    "toggle",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            IconButton(onClick = onDuplicate, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Outlined.ContentCopy, "duplicate",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Outlined.Delete, "delete",
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+            IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
+                Icon(
+                    Icons.Outlined.Close, "deselect",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
-        Spacer(Modifier.weight(1f))
-        IconButton(onClick = onToggle, modifier = Modifier.size(34.dp)) {
-            Icon(
-                if (region.enabled) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                "toggle",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
-            )
+        // For multi-selections show the shared override if uniform, else the
+        // session default — the slider still writes one value to all selected.
+        val shownStrength = if (single != null) {
+            single.strengthOverride ?: defaultStrength
+        } else {
+            selected.map { it.strengthOverride }.distinct().singleOrNull() ?: defaultStrength
         }
-        IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
-            Icon(
-                Icons.Outlined.Delete, "delete",
-                tint = MaterialTheme.colorScheme.error,
-                modifier = Modifier.size(18.dp),
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                "Effect",
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(52.dp),
             )
-        }
-        IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
-            Icon(
-                Icons.Outlined.Close, "deselect",
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.size(18.dp),
+            Slider(
+                value = shownStrength,
+                onValueChange = onStrength,
+                valueRange = ImageRedactor.MIN_STRENGTH..ImageRedactor.MAX_STRENGTH,
+                colors = SliderDefaults.colors(
+                    activeTrackColor = Teal,
+                    thumbColor = Teal,
+                    inactiveTrackColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+                modifier = Modifier.weight(1f),
+            )
+            Text(
+                "%.1fx".format(shownStrength),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.width(38.dp),
             )
         }
     }
@@ -343,10 +479,12 @@ private fun RedactCanvas(
     bitmap: Bitmap,
     cropOriginX: Int,
     cropOriginY: Int,
+    cropEdit: Boolean,
 ) {
     var userScale by remember { mutableStateOf(1f) }
     var userPan by remember { mutableStateOf(Offset.Zero) }
     var dragRect by remember { mutableStateOf<Rect?>(null) }
+    var cropDraft by remember { mutableStateOf<Rect?>(null) }
     var canvasSize by remember { mutableStateOf(Size.Zero) }
 
     val imgW = bitmap.width.toFloat()
@@ -359,11 +497,7 @@ private fun RedactCanvas(
         return Offset(ox, oy) to s
     }
 
-    // canvas-space position of crop-space (0,0)
-    fun origin(): Offset {
-        val (fitOrigin, base) = fits()
-        return fitOrigin + userPan
-    }
+    fun origin(): Offset = fits().first + userPan
 
     fun totalScale(): Float = fits().second * userScale
 
@@ -401,7 +535,7 @@ private fun RedactCanvas(
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(bitmap, cropOriginX, cropOriginY) {
+            .pointerInput(bitmap, cropOriginX, cropOriginY, cropEdit) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     var mode: GestureMode = GestureMode.Idle
@@ -411,44 +545,85 @@ private fun RedactCanvas(
                     var prevSpan = 0f
                     var moved = false
                     var gestureRegionStart: Rect? = null
+                    var gestureCropStart: Rect? = null
 
                     val downImg = toImage(down.position)
-                    val hit = hitRegion(downImg)
-                    val selectedRegion = vm.regions.firstOrNull { it.id == vm.selectedId }
 
-                    val handle = selectedRegion?.let { sel ->
-                        // handles live at the 4 corners in canvas space
-                        val rect = Rect(sel.rect).apply { offset(-cropOriginX, -cropOriginY) }
+                    if (cropEdit) {
+                        val crop = vm.cropRect()
                         val s = totalScale()
-                        val slopImg = 28f / s
+                        val slopImg = 30f / s
                         val corners = listOf(
-                            Offset(rect.left.toFloat(), rect.top.toFloat()),
-                            Offset(rect.right.toFloat(), rect.top.toFloat()),
-                            Offset(rect.right.toFloat(), rect.bottom.toFloat()),
-                            Offset(rect.left.toFloat(), rect.bottom.toFloat()),
+                            Offset(crop.left.toFloat(), crop.top.toFloat()),
+                            Offset(crop.right.toFloat(), crop.top.toFloat()),
+                            Offset(crop.right.toFloat(), crop.bottom.toFloat()),
+                            Offset(crop.left.toFloat(), crop.bottom.toFloat()),
                         )
-                        corners.indexOfFirst {
+                        val cornerHit = corners.indexOfFirst {
                             kotlin.math.abs(it.x - downImg.x) < slopImg &&
                                 kotlin.math.abs(it.y - downImg.y) < slopImg
-                        }.takeIf { it >= 0 }
-                    }
+                        }
+                        mode = when {
+                            cornerHit >= 0 -> {
+                                gestureCropStart = Rect(crop)
+                                GestureMode.CropResize(cornerHit)
+                            }
+                            crop.contains(downImg.x.roundToInt(), downImg.y.roundToInt()) -> {
+                                gestureCropStart = Rect(crop)
+                                lastImg = downImg
+                                GestureMode.CropMove
+                            }
+                            else -> {
+                                drawStart = downImg
+                                GestureMode.CropDraw
+                            }
+                        }
+                    } else {
+                        val hit = hitRegion(downImg)
+                        val singleSelected = vm.regions.firstOrNull {
+                            it.id == vm.selectedIds.singleOrNull()
+                        }
 
-                    mode = when {
-                        handle != null -> {
-                            vm.beginGesture()
-                            gestureRegionStart = Rect(selectedRegion.rect)
-                            GestureMode.Resize(selectedRegion.id, handle)
+                        val handle = singleSelected?.let { sel ->
+                            val rect = Rect(sel.rect).apply { offset(-cropOriginX, -cropOriginY) }
+                            val s = totalScale()
+                            val slopImg = 28f / s
+                            val corners = listOf(
+                                Offset(rect.left.toFloat(), rect.top.toFloat()),
+                                Offset(rect.right.toFloat(), rect.top.toFloat()),
+                                Offset(rect.right.toFloat(), rect.bottom.toFloat()),
+                                Offset(rect.left.toFloat(), rect.bottom.toFloat()),
+                            )
+                            corners.indexOfFirst {
+                                kotlin.math.abs(it.x - downImg.x) < slopImg &&
+                                    kotlin.math.abs(it.y - downImg.y) < slopImg
+                            }.takeIf { it >= 0 }
                         }
-                        hit != null -> {
-                            vm.select(hit.id)
-                            vm.beginGesture()
-                            gestureRegionStart = Rect(hit.rect)
-                            lastImg = downImg
-                            GestureMode.Move(hit.id)
-                        }
-                        else -> {
-                            drawStart = downImg
-                            GestureMode.Draw
+
+                        mode = when {
+                            handle != null -> {
+                                vm.beginGesture()
+                                gestureRegionStart = Rect(singleSelected.rect)
+                                GestureMode.Resize(singleSelected.id, handle)
+                            }
+                            hit != null -> {
+                                // tap = select, long-press = add/remove from selection, drag = move
+                                val lp = withTimeoutOrNull(350) {
+                                    awaitLongPressOrCancellation(down.id)
+                                }
+                                if (lp != null) {
+                                    vm.toggleSelect(hit.id)
+                                    GestureMode.Idle
+                                } else {
+                                    gestureRegionStart = Rect(hit.rect)
+                                    lastImg = downImg
+                                    GestureMode.Move(hit.id)
+                                }
+                            }
+                            else -> {
+                                drawStart = downImg
+                                GestureMode.Draw
+                            }
                         }
                     }
 
@@ -460,6 +635,7 @@ private fun RedactCanvas(
                             prevCentroid = Offset.Zero
                             prevSpan = 0f
                             dragRect = null
+                            cropDraft = null
                         }
 
                         when (val m = mode) {
@@ -484,7 +660,6 @@ private fun RedactCanvas(
                                     val newScale = (userScale * ratio).coerceIn(1f, 8f)
                                     val s = base * userScale
                                     val o = origin()
-                                    // image point under the centroid stays fixed
                                     val anchor = Offset(
                                         (centroid.x - o.x) / s,
                                         (centroid.y - o.y) / s,
@@ -539,6 +714,61 @@ private fun RedactCanvas(
                                     vm.resizeRegion(m.regionId, nr)
                                 }
                             }
+                            is GestureMode.CropResize -> {
+                                val p = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.first()
+                                val curImg = toImage(p.position)
+                                moved = true
+                                val start = gestureCropStart
+                                if (start != null) {
+                                    val nr = Rect(start)
+                                    when (m.corner) {
+                                        0 -> { nr.left = curImg.x.toInt(); nr.top = curImg.y.toInt() }
+                                        1 -> { nr.right = curImg.x.toInt(); nr.top = curImg.y.toInt() }
+                                        2 -> { nr.right = curImg.x.toInt(); nr.bottom = curImg.y.toInt() }
+                                        3 -> { nr.left = curImg.x.toInt(); nr.bottom = curImg.y.toInt() }
+                                    }
+                                    cropDraft = nr
+                                }
+                            }
+                            GestureMode.CropMove -> {
+                                val p = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.first()
+                                val curImg = toImage(p.position)
+                                if (p.positionChange() != Offset.Zero) {
+                                    moved = true
+                                    val start = gestureCropStart
+                                    if (start != null) {
+                                        val dx = (curImg.x - lastImg.x).roundToInt()
+                                        val dy = (curImg.y - lastImg.y).roundToInt()
+                                        if (dx != 0 || dy != 0) {
+                                            val src = vm.source
+                                            if (src != null) {
+                                                val w = start.width(); val h = start.height()
+                                                val l = (start.left + dx)
+                                                    .coerceIn(0, src.width - w)
+                                                val t = (start.top + dy)
+                                                    .coerceIn(0, src.height - h)
+                                                cropDraft = Rect(l, t, l + w, t + h)
+                                                gestureCropStart = Rect(cropDraft!!)
+                                            }
+                                            lastImg = curImg
+                                        }
+                                    }
+                                }
+                            }
+                            GestureMode.CropDraw -> {
+                                val p = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.first()
+                                val curImg = toImage(p.position)
+                                if (p.positionChange() != Offset.Zero) moved = true
+                                cropDraft = Rect(
+                                    min(drawStart.x, curImg.x).roundToInt(),
+                                    min(drawStart.y, curImg.y).roundToInt(),
+                                    kotlin.math.max(drawStart.x, curImg.x).roundToInt(),
+                                    kotlin.math.max(drawStart.y, curImg.y).roundToInt(),
+                                )
+                            }
                             GestureMode.Draw -> {
                                 val p = event.changes.firstOrNull { it.id == down.id }
                                     ?: event.changes.first()
@@ -565,12 +795,21 @@ private fun RedactCanvas(
                                             Rect(r).apply { offset(cropOriginX, cropOriginY) }
                                         )
                                     } else if (!moved) {
-                                        vm.select(null)
+                                        vm.clearSelection()
                                     }
                                     dragRect = null
                                 }
                                 is GestureMode.Move -> {
                                     if (!moved) vm.select(m.regionId)
+                                }
+                                is GestureMode.CropResize,
+                                GestureMode.CropMove,
+                                GestureMode.CropDraw -> {
+                                    val d = cropDraft
+                                    if (d != null && d.width() >= 32 && d.height() >= 32) {
+                                        vm.updateCropRect(d)
+                                    }
+                                    cropDraft = null
                                 }
                                 else -> {}
                             }
@@ -593,92 +832,132 @@ private fun RedactCanvas(
             dstSize = IntSize((imgW * s).roundToInt(), (imgH * s).roundToInt()),
         )
 
-        // region overlays
-        vm.regions.forEach { r ->
-            val rel = Rect(r.rect).apply { offset(-cropOriginX, -cropOriginY) }
-            val tl = toCanvas(Offset(rel.left.toFloat(), rel.top.toFloat()))
-            val br = toCanvas(Offset(rel.right.toFloat(), rel.bottom.toFloat()))
-            val color = regionColor(r.kind)
-            val isSelected = r.id == vm.selectedId
+        if (cropEdit) {
+            val crop = cropDraft ?: vm.cropRect()
+            val tl = toCanvas(Offset(crop.left.toFloat(), crop.top.toFloat()))
+            val br = toCanvas(Offset(crop.right.toFloat(), crop.bottom.toFloat()))
 
-            if (!r.enabled) {
-                drawRect(
-                    color = color.copy(alpha = 0.06f),
-                    topLeft = tl,
-                    size = Size(br.x - tl.x, br.y - tl.y),
-                )
-                drawRect(
-                    color = color.copy(alpha = 0.35f),
-                    topLeft = tl,
-                    size = Size(br.x - tl.x, br.y - tl.y),
-                    style = Stroke(
-                        width = 1.5.dp.toPx(),
-                        pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f)),
-                    ),
-                )
-            } else {
-                val fillAlpha = when (r.styleOverride ?: vm.defaultStyle) {
-                    RedactStyle.BLACK -> 0.82f
-                    RedactStyle.BLUR -> 0.30f
-                    RedactStyle.PIXELATE -> 0.34f
-                }
-                val fillColor = if ((r.styleOverride ?: vm.defaultStyle) == RedactStyle.BLACK) {
-                    Color.Black.copy(alpha = fillAlpha)
+            // dim outside the crop
+            drawRect(
+                color = Color.Black.copy(alpha = 0.55f),
+                topLeft = Offset.Zero,
+                size = Size(canvasSize.width, tl.y.coerceAtLeast(0f)),
+            )
+            drawRect(
+                color = Color.Black.copy(alpha = 0.55f),
+                topLeft = Offset(0f, br.y),
+                size = Size(canvasSize.width, (canvasSize.height - br.y).coerceAtLeast(0f)),
+            )
+            drawRect(
+                color = Color.Black.copy(alpha = 0.55f),
+                topLeft = Offset(0f, tl.y.coerceAtLeast(0f)),
+                size = Size(tl.x.coerceAtLeast(0f), (br.y - tl.y).coerceAtLeast(0f)),
+            )
+            drawRect(
+                color = Color.Black.copy(alpha = 0.55f),
+                topLeft = Offset(br.x, tl.y.coerceAtLeast(0f)),
+                size = Size((canvasSize.width - br.x).coerceAtLeast(0f), (br.y - tl.y).coerceAtLeast(0f)),
+            )
+            drawRect(
+                color = Teal,
+                topLeft = tl,
+                size = Size(br.x - tl.x, br.y - tl.y),
+                style = Stroke(width = 2.dp.toPx()),
+            )
+            val rad = 6.dp.toPx()
+            listOf(tl, Offset(br.x, tl.y), br, Offset(tl.x, br.y)).forEach { c ->
+                drawCircle(Color.White, rad * 1.6f, c)
+                drawCircle(Teal, rad, c)
+            }
+        } else {
+            // region overlays
+            vm.regions.forEach { r ->
+                val rel = Rect(r.rect).apply { offset(-cropOriginX, -cropOriginY) }
+                val tl = toCanvas(Offset(rel.left.toFloat(), rel.top.toFloat()))
+                val br = toCanvas(Offset(rel.right.toFloat(), rel.bottom.toFloat()))
+                val color = regionColor(r.kind)
+                val isSelected = r.id in vm.selectedIds
+                val showHandles = isSelected && vm.selectedIds.size == 1
+
+                if (!r.enabled) {
+                    drawRect(
+                        color = color.copy(alpha = 0.06f),
+                        topLeft = tl,
+                        size = Size(br.x - tl.x, br.y - tl.y),
+                    )
+                    drawRect(
+                        color = color.copy(alpha = 0.35f),
+                        topLeft = tl,
+                        size = Size(br.x - tl.x, br.y - tl.y),
+                        style = Stroke(
+                            width = 1.5.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(8f, 6f)),
+                        ),
+                    )
                 } else {
-                    color.copy(alpha = fillAlpha)
-                }
-                drawRect(color = fillColor, topLeft = tl, size = Size(br.x - tl.x, br.y - tl.y))
-                drawRect(
-                    color = color.copy(alpha = if (isSelected) 1f else 0.75f),
-                    topLeft = tl,
-                    size = Size(br.x - tl.x, br.y - tl.y),
-                    style = Stroke(width = if (isSelected) 2.5.dp.toPx() else 1.5.dp.toPx()),
-                )
-                // kind badge
-                drawContext.canvas.nativeCanvas.apply {
-                    val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).also {
-                        it.textSize = 11.dp.toPx()
-                        it.color = android.graphics.Color.WHITE
-                        it.textAlign = android.graphics.Paint.Align.CENTER
-                        it.isFakeBoldText = true
+                    val fillAlpha = when (r.styleOverride ?: vm.defaultStyle) {
+                        RedactStyle.BLACK -> 0.82f
+                        RedactStyle.BLUR -> 0.30f
+                        RedactStyle.PIXELATE -> 0.34f
                     }
-                    val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).also {
-                        it.color = android.graphics.Color.argb(
-                            220,
-                            (color.red * 255).toInt().coerceIn(0, 255),
-                            (color.green * 255).toInt().coerceIn(0, 255),
-                            (color.blue * 255).toInt().coerceIn(0, 255),
+                    val fillColor = if ((r.styleOverride ?: vm.defaultStyle) == RedactStyle.BLACK) {
+                        Color.Black.copy(alpha = fillAlpha)
+                    } else {
+                        color.copy(alpha = fillAlpha)
+                    }
+                    drawRect(color = fillColor, topLeft = tl, size = Size(br.x - tl.x, br.y - tl.y))
+                    drawRect(
+                        color = color.copy(alpha = if (isSelected) 1f else 0.75f),
+                        topLeft = tl,
+                        size = Size(br.x - tl.x, br.y - tl.y),
+                        style = Stroke(width = if (isSelected) 2.5.dp.toPx() else 1.5.dp.toPx()),
+                    )
+                    // kind badge
+                    drawContext.canvas.nativeCanvas.apply {
+                        val textPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).also {
+                            it.textSize = 11.dp.toPx()
+                            it.color = android.graphics.Color.WHITE
+                            it.textAlign = android.graphics.Paint.Align.CENTER
+                            it.isFakeBoldText = true
+                        }
+                        val bgPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).also {
+                            it.color = android.graphics.Color.argb(
+                                220,
+                                (color.red * 255).toInt().coerceIn(0, 255),
+                                (color.green * 255).toInt().coerceIn(0, 255),
+                                (color.blue * 255).toInt().coerceIn(0, 255),
+                            )
+                        }
+                        val badgeW = 20.dp.toPx()
+                        val badgeH = 16.dp.toPx()
+                        drawRoundRect(
+                            tl.x, tl.y - badgeH - 2,
+                            tl.x + badgeW, tl.y - 2,
+                            5.dp.toPx(), 5.dp.toPx(), bgPaint,
+                        )
+                        drawText(
+                            r.kind.badge,
+                            tl.x + badgeW / 2, tl.y - 6.dp.toPx(),
+                            textPaint,
                         )
                     }
-                    val badgeW = 20.dp.toPx()
-                    val badgeH = 16.dp.toPx()
-                    drawRoundRect(
-                        tl.x, tl.y - badgeH - 2,
-                        tl.x + badgeW, tl.y - 2,
-                        5.dp.toPx(), 5.dp.toPx(), bgPaint,
-                    )
-                    drawText(
-                        r.kind.badge,
-                        tl.x + badgeW / 2, tl.y - 6.dp.toPx(),
-                        textPaint,
-                    )
                 }
-            }
 
-            if (isSelected && r.enabled) {
-                // corner handles
-                val rad = 5.dp.toPx()
-                listOf(tl, Offset(br.x, tl.y), br, Offset(tl.x, br.y)).forEach { c ->
-                    drawCircle(Color.White, rad * 1.6f, c)
-                    drawCircle(color, rad, c)
+                if (showHandles && r.enabled) {
+                    val rad = 5.dp.toPx()
+                    listOf(tl, Offset(br.x, tl.y), br, Offset(tl.x, br.y)).forEach { c ->
+                        drawCircle(Color.White, rad * 1.6f, c)
+                        drawCircle(color, rad, c)
+                    }
                 }
             }
         }
 
-        // in-progress drag rect
-        dragRect?.let { r ->
-            val tl = toCanvas(Offset(r.left.toFloat(), r.top.toFloat()))
-            val br = toCanvas(Offset(r.right.toFloat(), r.bottom.toFloat()))
+        // in-progress draw rect (region or crop)
+        val pending = dragRect
+        if (pending != null) {
+            val tl = toCanvas(Offset(pending.left.toFloat(), pending.top.toFloat()))
+            val br = toCanvas(Offset(pending.right.toFloat(), pending.bottom.toFloat()))
             drawRect(
                 color = Color(0xFFFFD43B).copy(alpha = 0.25f),
                 topLeft = tl,

@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.Rect
 import android.net.Uri
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -47,20 +48,35 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var detectFaces by mutableStateOf(true)
     var detectCodes by mutableStateOf(true)
 
+    // ---- batch queue ----
+    var queue by mutableStateOf<List<Uri>>(emptyList())
+        private set
+    var queuePos by mutableIntStateOf(0)
+        private set
+    val hasNextInQueue get() = queuePos < queue.size - 1
+    val queueSize get() = queue.size
+
     // ---- crop ----
     var detectedCrop by mutableStateOf<AutoCrop.CropResult?>(null)
         private set
     var cropEnabled by mutableStateOf(true)
+    var cropEditMode by mutableStateOf(false)
+        private set
 
     // ---- regions (full-image pixel coords) ----
     var regions by mutableStateOf<List<RedactRegion>>(emptyList())
         private set
-    var selectedId by mutableStateOf<String?>(null)
+    var selectedIds by mutableStateOf<Set<String>>(emptySet())
+        private set
     var defaultStyle by mutableStateOf(RedactStyle.PIXELATE)
+    var defaultStrength by mutableFloatStateOf(1f)
     var livePreview by mutableStateOf(false)
 
     private val undoStack = ArrayDeque<List<RedactRegion>>()
+    private val redoStack = ArrayDeque<List<RedactRegion>>()
     var undoDepth by mutableIntStateOf(0)
+        private set
+    var redoDepth by mutableIntStateOf(0)
         private set
 
     // ---- export ----
@@ -90,8 +106,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun loadQueue(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        queue = uris
+        queuePos = 0
+        loadImage(uris.first())
+    }
+
+    fun nextInQueue() {
+        if (!hasNextInQueue) return
+        queuePos += 1
+        loadImage(queue[queuePos])
+    }
+
     fun loadImage(uri: Uri) {
         scanJob?.cancel()
+        resetImageState()
         screen = Screen.SCANNING
         errorMessage = null
         exportSaved = false
@@ -173,8 +203,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         regions = dedupe(all)
         undoStack.clear()
+        redoStack.clear()
         undoDepth = 0
-        selectedId = null
+        redoDepth = 0
+        selectedIds = emptySet()
         scanPhase = ScanPhase.DONE
         screen = Screen.EDITOR
         refreshPreview()
@@ -189,39 +221,90 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return out
     }
 
-    // ---- region ops (all push undo) ----
+    // ---- undo / redo ----
 
     private fun pushUndo() {
         if (undoStack.lastOrNull() == regions) return
         undoStack.addLast(regions)
         if (undoStack.size > 30) undoStack.removeFirst()
         undoDepth = undoStack.size
+        redoStack.clear()
+        redoDepth = 0
     }
 
     fun undo() {
         val prev = undoStack.removeLastOrNull() ?: return
+        redoStack.addLast(regions)
+        redoDepth = redoStack.size
         regions = prev
         undoDepth = undoStack.size
-        selectedId = null
+        selectedIds = emptySet()
         refreshPreview()
     }
 
-    fun toggleRegion(id: String) {
-        pushUndo()
-        regions = regions.map { if (it.id == id) it.copy(enabled = !it.enabled) else it }
+    fun redo() {
+        val next = redoStack.removeLastOrNull() ?: return
+        undoStack.addLast(regions)
+        undoDepth = undoStack.size
+        regions = next
+        redoDepth = redoStack.size
+        selectedIds = emptySet()
         refreshPreview()
     }
 
-    fun removeRegion(id: String) {
+    // ---- selection ----
+
+    fun select(id: String?) {
+        selectedIds = if (id == null) emptySet() else setOf(id)
+    }
+
+    fun toggleSelect(id: String) {
+        selectedIds = if (id in selectedIds) selectedIds - id else selectedIds + id
+    }
+
+    fun selectAll() {
+        selectedIds = regions.map { it.id }.toSet()
+    }
+
+    fun clearSelection() {
+        selectedIds = emptySet()
+    }
+
+    fun selectedRegions(): List<RedactRegion> = regions.filter { it.id in selectedIds }
+
+    // ---- region ops (all push undo) ----
+
+    fun setEnabledFor(ids: Set<String>, enabled: Boolean) {
         pushUndo()
-        regions = regions.filterNot { it.id == id }
-        if (selectedId == id) selectedId = null
+        regions = regions.map {
+            if (it.id in ids) it.copy(enabled = enabled) else it
+        }
         refreshPreview()
     }
 
-    fun setRegionStyle(id: String, style: RedactStyle?) {
+    fun toggleRegion(id: String) = setEnabledFor(setOf(id), !regions.any { it.id == id && it.enabled })
+
+    fun removeRegion(id: String) = removeRegions(setOf(id))
+
+    fun removeRegions(ids: Set<String>) {
         pushUndo()
-        regions = regions.map { if (it.id == id) it.copy(styleOverride = style) else it }
+        regions = regions.filterNot { it.id in ids }
+        selectedIds = selectedIds - ids
+        refreshPreview()
+    }
+
+    fun setRegionStyle(id: String, style: RedactStyle?) =
+        setStyleFor(setOf(id), style)
+
+    fun setStyleFor(ids: Set<String>, style: RedactStyle?) {
+        pushUndo()
+        regions = regions.map { if (it.id in ids) it.copy(styleOverride = style) else it }
+        refreshPreview()
+    }
+
+    fun setStrengthFor(ids: Set<String>, strength: Float?) {
+        pushUndo()
+        regions = regions.map { if (it.id in ids) it.copy(strengthOverride = strength) else it }
         refreshPreview()
     }
 
@@ -246,7 +329,22 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         pushUndo()
         val region = RedactRegion.new(clamped, RegionKind.MANUAL)
         regions = regions + region
-        selectedId = region.id
+        selectedIds = setOf(region.id)
+        refreshPreview()
+    }
+
+    fun duplicateSelected() {
+        val src = source ?: return
+        if (selectedIds.isEmpty()) return
+        pushUndo()
+        val copies = regions.filter { it.id in selectedIds }.map { r ->
+            val w = r.rect.width(); val h = r.rect.height()
+            val l = (r.rect.left + 24).coerceIn(0, src.width - w)
+            val t = (r.rect.top + 24).coerceIn(0, src.height - h)
+            r.copy(id = RedactRegion.new(r.rect, r.kind).id, rect = Rect(l, t, l + w, t + h))
+        }
+        regions = regions + copies
+        selectedIds = copies.map { it.id }.toSet()
         refreshPreview()
     }
 
@@ -270,15 +368,23 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun commitGesture() {
-        // call once when a move/resize gesture ends — snapshot for undo there,
-        // not per frame, so the stack stays meaningful
-    }
-
     fun beginGesture() = pushUndo()
 
     fun updateCrop(enabled: Boolean) {
         cropEnabled = enabled
+        refreshPreview()
+    }
+
+    fun toggleCropEdit() {
+        cropEditMode = !cropEditMode
+        if (cropEditMode) cropEnabled = true
+    }
+
+    fun updateCropRect(rect: Rect) {
+        val src = source ?: return
+        val clamped = rect.clampTo(src.width, src.height, minSize = 32) ?: return
+        detectedCrop = AutoCrop.CropResult(clamped, "manual")
+        cropEnabled = true
         refreshPreview()
     }
 
@@ -292,7 +398,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val shifted = regions.map {
             it.copy(rect = Rect(it.rect).apply { offset(-crop.left, -crop.top) })
         }
-        return ImageRedactor.render(cropped, shifted, defaultStyle)
+        return ImageRedactor.render(cropped, shifted, defaultStyle, defaultStrength)
     }
 
     fun refreshPreview() {
@@ -309,6 +415,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun goExport() {
+        cropEditMode = false
         screen = Screen.EXPORT
         renderFinal()
     }
@@ -344,27 +451,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return runCatching { Exporter.shareUri(context, bmp) }.getOrNull()
     }
 
-    fun reset() {
-        scanJob?.cancel()
-        source = null
+    private fun resetImageState() {
         regions = emptyList()
-        selectedId = null
+        selectedIds = emptySet()
         detectedCrop = null
+        cropEditMode = false
         renderedPreview = null
         renderedFinal = null
         exportSaved = false
-        errorMessage = null
         undoStack.clear()
+        redoStack.clear()
         undoDepth = 0
+        redoDepth = 0
+    }
+
+    fun reset() {
+        scanJob?.cancel()
+        source = null
+        queue = emptyList()
+        queuePos = 0
+        resetImageState()
+        errorMessage = null
         screen = Screen.HOME
     }
 
     fun navigateTo(target: Screen) {
+        if (target != Screen.EDITOR) cropEditMode = false
         screen = target
         if (target == Screen.EDITOR) refreshPreview()
-    }
-
-    fun select(id: String?) {
-        selectedId = id
     }
 }
