@@ -99,4 +99,5 @@
     <string name="apply_all_note">Beautify &amp; kategori terbawa ke %1$d gambar berikutnya — ubah di Pengaturan.</string>
     <string name="save_failed">Gagal menyimpan</string>
     <string name="verify_notice">%1$d kode masih terbaca — ditingkatkan ke blackout</string>
+    <string name="verify_exposed">%1$d kode masih dapat dibaca (region nonaktif atau tak tercakup)</string>
 </resources>

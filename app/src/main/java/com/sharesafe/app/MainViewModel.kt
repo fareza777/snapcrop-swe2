@@ -1,6 +1,7 @@
 package com.sharesafe.app
 
 import android.app.Application
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.net.Uri
@@ -192,6 +193,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun loadQueue(uris: List<Uri>) {
         if (uris.isEmpty()) return
+        // Persist read grants so a saved queue can resume after process death.
+        // Photo Picker/document URIs support it; best-effort elsewhere.
+        val resolver = getApplication<Application>().contentResolver
+        uris.forEach { uri ->
+            try {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) { }
+        }
         queue = uris
         queuePos = 0
         persistQueue()
@@ -633,20 +642,38 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             return list
         }
         if (surviving.isEmpty()) return list
-        val leaky = list.filter { r ->
+        val survivingFull = surviving.map {
+            Rect(it.bounds).apply { offset(crop.left, crop.top) }
+        }
+        // Auto-fix: enabled non-blackout CODE regions that still decode.
+        val leakyIds = list.filter { r ->
             r.kind == RegionKind.CODE && r.enabled &&
                 (r.styleOverride ?: defaultStyle) != RedactStyle.BLACK &&
-                surviving.any { code ->
-                    Rect(code.bounds).apply { offset(crop.left, crop.top) }
-                        .let { Rect.intersects(it, r.rect) }
-                }
+                survivingFull.any { Rect.intersects(it, r.rect) }
+        }.map { it.id }.toSet()
+        val upgraded = list.map {
+            if (it.id in leakyIds) it.copy(styleOverride = RedactStyle.BLACK) else it
         }
-        if (leaky.isEmpty()) return list
-        val leakyIds = leaky.map { it.id }.toSet()
-        verifyNotice = getApplication<Application>().getString(
-            R.string.verify_notice, leaky.size,
-        )
-        return list.map { if (it.id in leakyIds) it.copy(styleOverride = RedactStyle.BLACK) else it }
+        // Exposed: a decodable code left uncovered or under a disabled region —
+        // we can't silently fix those, but the "verified clean" badge must not show.
+        val coveredIds = upgraded.filter { r ->
+            r.kind == RegionKind.CODE && r.enabled &&
+                (r.styleOverride ?: defaultStyle) == RedactStyle.BLACK
+        }
+        val exposed = survivingFull.count { code ->
+            coveredIds.none { Rect.intersects(code, it.rect) }
+        }
+        val app = getApplication<Application>()
+        verifyNotice = buildString {
+            if (leakyIds.isNotEmpty()) {
+                append(app.getString(R.string.verify_notice, leakyIds.size))
+            }
+            if (exposed > 0) {
+                if (isNotEmpty()) append(' ')
+                append(app.getString(R.string.verify_exposed, exposed))
+            }
+        }.ifEmpty { null }
+        return upgraded
     }
 
     /** Render + post-verify pass. Mutates regions if a code leaks. */

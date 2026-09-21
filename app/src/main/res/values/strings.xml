@@ -106,4 +106,5 @@
     <string name="apply_all_note">Beautify &amp; category settings carry over to the next %1$d images — toggle in Settings.</string>
     <string name="save_failed">Save failed</string>
     <string name="verify_notice">%1$d code(s) still scannable — upgraded to blackout</string>
+    <string name="verify_exposed">%1$d code(s) remain scannable (region disabled or uncovered)</string>
 </resources>
