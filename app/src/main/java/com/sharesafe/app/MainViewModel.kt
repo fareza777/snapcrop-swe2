@@ -373,10 +373,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             (crop.right / detScale).toInt(),
             (crop.bottom / detScale).toInt(),
         )
+        val detWorkCropped = !(detCrop.left == 0 && detCrop.top == 0 &&
+            detCrop.width() == detSource.width && detCrop.height() == detSource.height)
         val detWork = withContext(Dispatchers.Default) {
-            if (detCrop.left == 0 && detCrop.top == 0 &&
-                detCrop.width() == detSource.width && detCrop.height() == detSource.height
-            ) {
+            if (!detWorkCropped) {
                 detSource
             } else {
                 Bitmap.createBitmap(detSource, detCrop.left, detCrop.top, detCrop.width(), detCrop.height())
@@ -498,6 +498,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
 
         regions = dedupe(all)
+        if (detWorkCropped) detWork.recycle()
         undoStack.clear()
         redoStack.clear()
         undoDepth = 0
@@ -768,7 +769,17 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             val h = r.rect.height().coerceAtMost(src.height)
             val l = (r.rect.left + 24).coerceIn(0, src.width - w)
             val t = (r.rect.top + 24).coerceIn(0, src.height - h)
-            r.copy(id = RedactRegion.new(r.rect, r.kind).id, rect = Rect(l, t, l + w, t + h))
+            val copy = r.copy(
+                id = RedactRegion.new(r.rect, r.kind).id,
+                rect = Rect(l, t, l + w, t + h),
+            )
+            if (r.strokePoints != null) {
+                val ox = (l - r.rect.left).toFloat()
+                val oy = (t - r.rect.top).toFloat()
+                copy.copy(strokePoints = FloatArray(r.strokePoints.size) { i ->
+                    r.strokePoints[i] + if (i % 2 == 0) ox else oy
+                })
+            } else copy
         }
         regions = regions + copies
         selectedIds = copies.map { it.id }.toSet()
@@ -783,7 +794,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val h = r.rect.height().coerceAtMost(src.height)
                 val l = (r.rect.left + dx).coerceIn(0, src.width - w)
                 val t = (r.rect.top + dy).coerceIn(0, src.height - h)
-                r.copy(rect = Rect(l, t, l + w, t + h))
+                val moved = r.copy(rect = Rect(l, t, l + w, t + h))
+                // Marker strokes live in image coords — translate with the rect.
+                if (r.strokePoints != null) {
+                    val ox = (l - r.rect.left).toFloat()
+                    val oy = (t - r.rect.top).toFloat()
+                    moved.copy(strokePoints = FloatArray(r.strokePoints.size) { i ->
+                        r.strokePoints[i] + if (i % 2 == 0) ox else oy
+                    })
+                } else moved
             }
         }
     }
