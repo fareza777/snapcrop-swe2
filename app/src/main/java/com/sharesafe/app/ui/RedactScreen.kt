@@ -34,9 +34,14 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.CropFree
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SelectAll
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
+import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
@@ -66,12 +71,14 @@ import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.input.pointer.changedToUp
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.input.pointer.positionChange
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sharesafe.app.MainViewModel
+import com.sharesafe.app.R
 import com.sharesafe.app.core.ImageRedactor
 import com.sharesafe.app.core.RedactRegion
 import com.sharesafe.app.core.RedactStyle
@@ -127,21 +134,24 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             IconButton(onClick = onClose) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", tint = MaterialTheme.colorScheme.onSurface)
+                Icon(Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.back), tint = MaterialTheme.colorScheme.onSurface)
             }
             Column(Modifier.weight(1f)) {
                 Text(
-                    if (cropEditing) "Crop" else "Redact",
+                    if (cropEditing) stringResource(R.string.editor_crop_title) else stringResource(R.string.editor_title),
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
                     buildString {
-                        if (cropEditing) append("Drag corners to adjust")
+                        if (cropEditing) append(stringResource(R.string.editor_crop_subtitle))
                         else {
-                            append("$enabledCount area${if (enabledCount == 1) "" else "s"} protected")
-                            if (vm.queueSize > 1) append("  •  Image ${vm.queuePos + 1}/${vm.queueSize}")
+                            append(
+                                if (enabledCount == 1) stringResource(R.string.editor_areas_one)
+                                else stringResource(R.string.editor_areas_many, enabledCount)
+                            )
+                            if (vm.queueSize > 1) append("  •  " + stringResource(R.string.editor_image_pos, vm.queuePos + 1, vm.queueSize))
                         }
                     },
                     fontSize = 12.sp,
@@ -150,14 +160,14 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
             }
             IconButton(onClick = vm::undo, enabled = vm.undoDepth > 0) {
                 Icon(
-                    Icons.AutoMirrored.Outlined.Undo, "Undo",
+                    Icons.AutoMirrored.Outlined.Undo, stringResource(R.string.undo),
                     tint = if (vm.undoDepth > 0) MaterialTheme.colorScheme.onSurface
                     else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                 )
             }
             IconButton(onClick = vm::redo, enabled = vm.redoDepth > 0) {
                 Icon(
-                    Icons.AutoMirrored.Outlined.Redo, "Redo",
+                    Icons.AutoMirrored.Outlined.Redo, stringResource(R.string.redo),
                     tint = if (vm.redoDepth > 0) MaterialTheme.colorScheme.onSurface
                     else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
                 )
@@ -170,7 +180,7 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                 enabled = vm.regions.isNotEmpty() && !cropEditing,
             ) {
                 Icon(
-                    Icons.Outlined.SelectAll, "Select all",
+                    Icons.Outlined.SelectAll, stringResource(R.string.select_all),
                     tint = if (vm.selectedIds.isNotEmpty()) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -178,25 +188,70 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
             IconButton(onClick = { vm.toggleLivePreview(!vm.livePreview) }, enabled = !cropEditing) {
                 Icon(
                     if (vm.livePreview) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
-                    "Preview",
+                    stringResource(R.string.preview_toggle),
                     tint = if (vm.livePreview) MaterialTheme.colorScheme.primary
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = { vm.updateCrop(!vm.cropEnabled) }, enabled = !cropEditing) {
+            Box {
+                var menuOpen by remember { mutableStateOf(false) }
+                IconButton(onClick = { menuOpen = true }) {
+                    Icon(
+                        Icons.Outlined.MoreVert, stringResource(R.string.more),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text(if (vm.cropEnabled) stringResource(R.string.menu_autocrop_on) else stringResource(R.string.menu_autocrop_off)) },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.CropFree, null,
+                                tint = if (vm.cropEnabled) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant)
+                        },
+                        onClick = { vm.updateCrop(!vm.cropEnabled); menuOpen = false },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(if (cropEditing) stringResource(R.string.menu_done_crop) else stringResource(R.string.menu_edit_crop)) },
+                        leadingIcon = { Icon(Icons.Outlined.Crop, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        onClick = { vm.toggleCropEdit(); menuOpen = false },
+                    )
+                    if (vm.failedPhases.isNotEmpty() || vm.ocrWords.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.menu_rescan)) },
+                            leadingIcon = { Icon(Icons.Outlined.Refresh, null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                            onClick = { vm.retryDetection(); menuOpen = false },
+                        )
+                    }
+                }
+            }
+        }
+
+        // ---------- degraded-scan banner ----------
+        if (vm.failedPhases.isNotEmpty() && !cropEditing) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
+                    .clickable { vm.retryDetection() }
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 Icon(
-                    Icons.Outlined.CropFree, "Crop bars",
-                    tint = if (vm.cropEnabled) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                    Icons.Outlined.Warning, null,
+                    tint = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    stringResource(R.string.scan_failed),
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.error,
                 )
             }
-            IconButton(onClick = vm::toggleCropEdit) {
-                Icon(
-                    Icons.Outlined.Crop, "Edit crop",
-                    tint = if (cropEditing) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            Spacer(Modifier.height(6.dp))
         }
 
         // ---------- canvas ----------
@@ -251,12 +306,14 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                     kinds.forEach { kind ->
                         val group = vm.regions.filter { it.kind == kind }
                         val allOn = group.all { it.enabled }
+                        val allSelected = group.all { it.id in vm.selectedIds }
                         FilterChip(
-                            selected = allOn,
-                            onClick = { vm.setKindEnabled(kind, !allOn) },
+                            selected = allSelected || allOn,
+                            onClick = { vm.selectAllOf(kind) },
                             label = {
                                 Text(
-                                    "${kind.label} ${group.size}",
+                                    "${kind.label} ${group.size}" +
+                                        if (!allOn) " (off)" else "",
                                     fontSize = 12.sp,
                                 )
                             },
@@ -267,7 +324,7 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                             ),
                             border = FilterChipDefaults.filterChipBorder(
                                 enabled = true,
-                                selected = allOn,
+                                selected = allSelected || allOn,
                                 borderColor = MaterialTheme.colorScheme.outline,
                                 selectedBorderColor = regionColor(kind),
                             ),
@@ -304,7 +361,7 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                 if (selected.isEmpty()) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(
-                            "Effect",
+                            stringResource(R.string.effect),
                             fontSize = 12.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.width(52.dp),
@@ -329,24 +386,70 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                     }
                 }
                 Text(
-                    "Drag empty space to cover more. Tap an area to edit, long-press to multi-select.",
+                    stringResource(R.string.editor_hint),
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             } else {
                 Text(
-                    "Crop: drag a corner to adjust, drag inside to move, drag outside to redraw.",
+                    stringResource(R.string.editor_crop_hint),
                     fontSize = 11.5.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             Spacer(Modifier.height(12.dp))
             GradientButton(
-                text = "Preview & Share  →",
+                text = stringResource(R.string.editor_done),
                 onClick = onDone,
             )
             Spacer(Modifier.height(14.dp))
+        }
+    }
+
+    // One-time gesture coach marks.
+    if (!vm.hintsSeen) {
+        CoachMarkOverlay(onDismiss = vm::markHintsSeen)
+    }
+}
+
+@Composable
+private fun CoachMarkOverlay(onDismiss: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.72f))
+            .clickable(onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.85f)
+                .clip(RoundedCornerShape(20.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(20.dp))
+                .padding(22.dp),
+        ) {
+            Text(
+                stringResource(R.string.coach_title),
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(Modifier.height(12.dp))
+            listOf(
+                stringResource(R.string.coach_tap),
+                stringResource(R.string.coach_longpress),
+                stringResource(R.string.coach_move),
+                stringResource(R.string.coach_zoom),
+            ).forEach {
+                Row(Modifier.padding(vertical = 5.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("•", color = Teal, fontWeight = FontWeight.Bold)
+                    Text(it, fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            GradientButton(text = stringResource(R.string.coach_gotit), onClick = onDismiss)
         }
     }
 }
@@ -378,7 +481,7 @@ private fun SelectionBar(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             PillLabel(
-                single?.kind?.label?.uppercase() ?: "${selected.size} SELECTED",
+                single?.kind?.label?.uppercase() ?: stringResource(R.string.selected_count, selected.size),
                 kindColor,
             )
             Spacer(Modifier.width(2.dp))
@@ -411,28 +514,28 @@ private fun SelectionBar(
             IconButton(onClick = onToggle, modifier = Modifier.size(34.dp)) {
                 Icon(
                     if (selected.all { it.enabled }) Icons.Outlined.VisibilityOff else Icons.Outlined.Visibility,
-                    "toggle",
+                    stringResource(R.string.toggle),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
             }
             IconButton(onClick = onDuplicate, modifier = Modifier.size(34.dp)) {
                 Icon(
-                    Icons.Outlined.ContentCopy, "duplicate",
+                    Icons.Outlined.ContentCopy, stringResource(R.string.duplicate),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
             }
             IconButton(onClick = onDelete, modifier = Modifier.size(34.dp)) {
                 Icon(
-                    Icons.Outlined.Delete, "delete",
+                    Icons.Outlined.Delete, stringResource(R.string.delete),
                     tint = MaterialTheme.colorScheme.error,
                     modifier = Modifier.size(18.dp),
                 )
             }
             IconButton(onClick = onClose, modifier = Modifier.size(34.dp)) {
                 Icon(
-                    Icons.Outlined.Close, "deselect",
+                    Icons.Outlined.Close, stringResource(R.string.deselect),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
@@ -447,7 +550,7 @@ private fun SelectionBar(
         }
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "Effect",
+                stringResource(R.string.effect),
                 fontSize = 12.sp,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.width(52.dp),
@@ -795,7 +898,9 @@ private fun RedactCanvas(
                                             Rect(r).apply { offset(cropOriginX, cropOriginY) }
                                         )
                                     } else if (!moved) {
-                                        vm.clearSelection()
+                                        val fullX = (downImg.x + cropOriginX).roundToInt()
+                                        val fullY = (downImg.y + cropOriginY).roundToInt()
+                                        if (!vm.redactWordAt(fullX, fullY)) vm.clearSelection()
                                     }
                                     dragRect = null
                                 }

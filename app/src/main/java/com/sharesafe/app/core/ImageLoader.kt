@@ -14,9 +14,22 @@ import kotlinx.coroutines.withContext
 object ImageLoader {
 
     private const val MAX_DIMENSION = 3000
+    /** Detectors get a less-downsampled copy so small text survives ML Kit's thresholds. */
+    private const val DETECT_MAX_DIMENSION = 4200
 
     /** Decodes a content Uri to a correctly-rotated, size-capped Bitmap. */
-    suspend fun load(resolver: ContentResolver, uri: Uri): Bitmap = withContext(Dispatchers.IO) {
+    suspend fun load(resolver: ContentResolver, uri: Uri): Bitmap =
+        load(resolver, uri, MAX_DIMENSION)
+
+    /** Higher-resolution copy used only during detection; caller recycles it. */
+    suspend fun loadForDetection(resolver: ContentResolver, uri: Uri): Bitmap =
+        load(resolver, uri, DETECT_MAX_DIMENSION)
+
+    private suspend fun load(
+        resolver: ContentResolver,
+        uri: Uri,
+        maxDimension: Int,
+    ): Bitmap = withContext(Dispatchers.IO) {
         val bounds = resolver.openInputStream(uri)?.use { input ->
             val opts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
             BitmapFactory.decodeStream(input, null, opts)
@@ -28,7 +41,7 @@ object ImageLoader {
         require(rawW > 0 && rawH > 0) { "Not a decodable image" }
 
         var sample = 1
-        while (rawW / (sample * 2) >= MAX_DIMENSION || rawH / (sample * 2) >= MAX_DIMENSION) {
+        while (rawW / (sample * 2) >= maxDimension || rawH / (sample * 2) >= maxDimension) {
             sample *= 2
         }
 

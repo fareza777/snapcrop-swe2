@@ -39,6 +39,12 @@ object ImageRedactor {
     const val MIN_STRENGTH = 0.5f
     const val MAX_STRENGTH = 4f
 
+    fun pixelateBlockSize(strength: Float): Int =
+        (12 * strength.coerceIn(MIN_STRENGTH, MAX_STRENGTH)).toInt().coerceIn(4, 96)
+
+    fun blurDivisor(strength: Float): Int =
+        (24 * strength.coerceIn(MIN_STRENGTH, MAX_STRENGTH)).toInt().coerceIn(6, 160)
+
     private fun opaqueInPlace(bitmap: Bitmap, rect: Rect, color: Int = Color.BLACK) {
         val safe = rect.clippedTo(bitmap) ?: return
         val row = IntArray(safe.width()) { color or (0xFF shl 24) }
@@ -49,7 +55,7 @@ object ImageRedactor {
 
     private fun pixelateInPlace(result: Bitmap, canvas: Canvas, rect: Rect, strength: Float) {
         val safe = rect.clippedTo(result) ?: return
-        val blockSize = (12 * strength).toInt().coerceIn(4, 96)
+        val blockSize = pixelateBlockSize(strength)
         if (safe.width() < 2 || safe.height() < 2) return
         if (safe.width() < blockSize * 2 || safe.height() < blockSize * 2) {
             solidFill(result, canvas, safe)
@@ -61,7 +67,7 @@ object ImageRedactor {
     private fun blurInPlace(result: Bitmap, canvas: Canvas, rect: Rect, strength: Float) {
         val safe = rect.clippedTo(result) ?: return
         if (safe.width() < 2 || safe.height() < 2) return
-        scaleRegion(result, canvas, safe, divisor = (24 * strength).toInt().coerceIn(6, 160),
+        scaleRegion(result, canvas, safe, divisor = blurDivisor(strength),
             filterUpscale = true)
     }
 

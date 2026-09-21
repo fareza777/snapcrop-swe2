@@ -32,12 +32,14 @@ class MainActivity : ComponentActivity() {
         incomingImages.value = intent?.extractSharedImages().orEmpty()
         enableEdgeToEdge()
         setContent {
-            ShareSafeTheme {
+            val vm: MainViewModel = viewModel()
+            ShareSafeTheme(dynamicColor = vm.dynamicColor) {
                 Surface(
                     modifier = Modifier.fillMaxSize(),
                     color = MaterialTheme.colorScheme.background,
                 ) {
                     ShareSafeRoot(
+                        vm = vm,
                         incoming = incomingImages.value,
                         onIncomingConsumed = { incomingImages.value = emptyList() },
                     )
@@ -77,9 +79,11 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-private fun ShareSafeRoot(incoming: List<Uri>, onIncomingConsumed: () -> Unit) {
-    val vm: MainViewModel = viewModel()
-
+private fun ShareSafeRoot(
+    vm: MainViewModel,
+    incoming: List<Uri>,
+    onIncomingConsumed: () -> Unit,
+) {
     val pickImages = rememberLauncherForActivityResult(
         ActivityResultContracts.PickMultipleVisualMedia(maxItems = 9),
     ) { uris -> if (uris.isNotEmpty()) vm.loadQueue(uris) }
@@ -101,6 +105,7 @@ private fun ShareSafeRoot(incoming: List<Uri>, onIncomingConsumed: () -> Unit) {
 
     when (vm.screen) {
         Screen.HOME -> HomeScreen(
+            vm = vm,
             error = vm.errorMessage,
             onPick = {
                 pickImages.launch(
@@ -110,6 +115,10 @@ private fun ShareSafeRoot(incoming: List<Uri>, onIncomingConsumed: () -> Unit) {
         )
         Screen.SCANNING -> ScanningScreen(
             phase = vm.scanPhase,
+            progress = vm.scanProgress,
+            thumbnail = vm.source,
+            queueIndex = vm.queuePos + 1,
+            queueTotal = vm.queueSize,
             onCancel = vm::reset,
         )
         Screen.EDITOR -> RedactScreen(

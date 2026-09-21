@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -17,8 +18,28 @@ android {
         versionName = "1.0"
     }
 
+    // Release signing: drop keystore.properties next to settings.gradle.kts.
+    // Falls back to unsigned when absent so CI/dev builds keep working.
+    val keystoreProps = Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    val hasSigning = keystoreProps.getProperty("storeFile") != null
+
+    signingConfigs {
+        if (hasSigning) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (hasSigning) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -48,6 +69,15 @@ kotlin {
     }
 }
 
+// Robolectric downloads its android-all jar at test runtime; route it through
+// the same Maven Central mirror the project uses (repo1 is rate-limited here).
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "robolectric.dependency.repo.url",
+        "https://cache-redirector.jetbrains.com/maven-central",
+    )
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -66,4 +96,5 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
 }

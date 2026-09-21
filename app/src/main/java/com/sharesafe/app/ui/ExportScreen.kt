@@ -27,6 +27,10 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.SaveAlt
+import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.outlined.Warning
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -47,11 +51,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sharesafe.app.MainViewModel
+import com.sharesafe.app.R
 import com.sharesafe.app.core.BackgroundKind
+import com.sharesafe.app.core.ExportFormat
 import com.sharesafe.app.core.Exporter
 import com.sharesafe.app.ui.theme.AccentBrush
 import com.sharesafe.app.ui.theme.Teal
@@ -61,6 +68,7 @@ import kotlin.math.roundToInt
 @Composable
 fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
     val context = LocalContext.current
+    val chooserTitle = stringResource(R.string.share_chooser)
     val scope = rememberCoroutineScope()
     var shareBusy by remember { mutableStateOf(false) }
     var saveDone by remember { mutableStateOf(false) }
@@ -78,20 +86,20 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
         ) {
             IconButton(onClick = onBack) {
                 Icon(
-                    Icons.AutoMirrored.Outlined.ArrowBack, "Back",
+                    Icons.AutoMirrored.Outlined.ArrowBack, stringResource(R.string.back),
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
             Column(Modifier.weight(1f)) {
                 Text(
-                    "Preview",
+                    stringResource(R.string.export_title),
                     fontWeight = FontWeight.Bold,
                     fontSize = 18.sp,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    "Redaction is permanent in the export" +
-                        if (vm.queueSize > 1) "  •  Image ${vm.queuePos + 1}/${vm.queueSize}" else "",
+                    stringResource(R.string.export_subtitle) +
+                        if (vm.queueSize > 1) "  •  " + stringResource(R.string.editor_image_pos, vm.queuePos + 1, vm.queueSize) else "",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -117,7 +125,7 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                 if (final != null) {
                     Image(
                         bitmap = final.asImageBitmap(),
-                        contentDescription = "Redacted preview",
+                        contentDescription = stringResource(R.string.redacted_preview_cd),
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxWidth()
@@ -127,15 +135,69 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                     )
                 } else {
                     Text(
-                        "Rendering…",
+                        stringResource(R.string.rendering),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.padding(40.dp),
                     )
                 }
             }
 
+            vm.verifyNotice?.let { notice ->
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Outlined.Warning, null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(16.dp))
+                    Text(notice, fontSize = 12.sp, color = MaterialTheme.colorScheme.error)
+                }
+            }
+            if (vm.verifyNotice == null && vm.renderedFinal != null) {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(Icons.Outlined.VerifiedUser, null, tint = Teal, modifier = Modifier.size(14.dp))
+                    Text(
+                        stringResource(R.string.verified_clean),
+                        fontSize = 11.5.sp,
+                        color = Teal,
+                    )
+                }
+            }
+
             Spacer(Modifier.height(18.dp))
-            SectionLabel("Beautify")
+            SectionLabel(stringResource(R.string.format))
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ExportFormat.entries.forEach { f ->
+                    FilterChip(
+                        selected = vm.exportFormat == f,
+                        onClick = { vm.exportFormat = f },
+                        label = { Text(f.label, fontSize = 12.sp) },
+                        colors = FilterChipDefaults.filterChipColors(
+                            selectedContainerColor = Teal.copy(alpha = 0.2f),
+                            selectedLabelColor = Teal,
+                            labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                        ),
+                        border = FilterChipDefaults.filterChipBorder(
+                            enabled = true,
+                            selected = vm.exportFormat == f,
+                            borderColor = MaterialTheme.colorScheme.outline,
+                            selectedBorderColor = Teal,
+                        ),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(14.dp))
+            SectionLabel(stringResource(R.string.beautify))
             Spacer(Modifier.height(10.dp))
 
             Row(
@@ -155,14 +217,14 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
 
             Spacer(Modifier.height(14.dp))
             SliderRow(
-                label = "Padding",
+                label = stringResource(R.string.padding),
                 value = vm.beautify.paddingPx.toFloat(),
                 range = 0f..160f,
                 enabled = vm.beautify.background != BackgroundKind.NONE,
             ) { vm.updateBeautify(vm.beautify.copy(paddingPx = it.roundToInt())) }
 
             SliderRow(
-                label = "Corners",
+                label = stringResource(R.string.corners),
                 value = vm.beautify.cornerRadiusPx,
                 range = 0f..96f,
                 enabled = vm.beautify.background != BackgroundKind.NONE,
@@ -173,7 +235,7 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    "Shadow",
+                    stringResource(R.string.shadow),
                     fontSize = 13.sp,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1f),
@@ -194,7 +256,7 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                 .padding(horizontal = 16.dp),
         ) {
             GradientButton(
-                text = if (shareBusy) "Preparing…" else "Safe Share",
+                text = if (shareBusy) stringResource(R.string.preparing) else stringResource(R.string.safe_share),
                 onClick = {
                     shareBusy = true
                     scope.launch {
@@ -203,8 +265,8 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                         if (uri != null) {
                             context.startActivity(
                                 android.content.Intent.createChooser(
-                                    Exporter.shareIntent(uri),
-                                    "Share redacted image",
+                                    Exporter.shareIntent(uri, vm.exportFormat.mime),
+                                    chooserTitle,
                                 )
                             )
                         }
@@ -248,9 +310,9 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                         )
                         Text(
                             when {
-                                vm.exporting -> "Saving…"
-                                saveDone -> "Saved"
-                                else -> "Save to gallery"
+                                vm.exporting -> stringResource(R.string.saving)
+                                saveDone -> stringResource(R.string.saved)
+                                else -> stringResource(R.string.save_gallery)
                             },
                             fontSize = 14.sp,
                             fontWeight = FontWeight.SemiBold,
@@ -272,7 +334,7 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "Next →",
+                            stringResource(R.string.next),
                             fontSize = 14.sp,
                             fontWeight = FontWeight.Bold,
                             color = Color(0xFF06231C),
@@ -294,11 +356,19 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                 ) {
                     Icon(
                         Icons.Outlined.Close,
-                        "Done",
+                        stringResource(R.string.done),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.size(18.dp),
                     )
                 }
+            }
+            if (vm.applyToAll && vm.hasNextInQueue) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    stringResource(R.string.apply_all_note, vm.queueSize - vm.queuePos - 1),
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Spacer(Modifier.height(14.dp))
         }
@@ -362,7 +432,7 @@ private fun BackgroundSwatch(kind: BackgroundKind, selected: Boolean, onClick: (
         }
         Spacer(Modifier.height(6.dp))
         Text(
-            kind.label,
+            kind.label,  // kind names stay English (brand-neutral nouns)
             fontSize = 10.5.sp,
             color = if (selected) Teal else MaterialTheme.colorScheme.onSurfaceVariant,
         )

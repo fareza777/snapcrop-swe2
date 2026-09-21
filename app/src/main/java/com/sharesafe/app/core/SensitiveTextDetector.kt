@@ -109,6 +109,8 @@ object SensitiveTextDetector {
 
 object SensitivePatterns {
     private data class P(val kind: RegionKind, val regex: Regex, val label: String)
+    /** Regexes whose capture group 1 marks the sensitive value. */
+    private data class CP(val kind: RegionKind, val regex: Regex, val label: String)
 
     private val patterns = listOf(
         P(RegionKind.EMAIL, Regex("[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", RegexOption.IGNORE_CASE), "Email"),
@@ -130,6 +132,32 @@ object SensitivePatterns {
             "\\b\\s*[:=]\\s*[\"']?([A-Za-z0-9_./+~$@!#%^&*=-]{4,256})",
         RegexOption.IGNORE_CASE,
     )
+    // Indonesian context patterns — the keyword label tells the user what kind
+    // of identifier was found instead of a generic "number".
+    private val contextPatterns = listOf(
+        CP(
+            RegionKind.NUMBER,
+            Regex("\\b(?:nik|no\\.?\\s?ktp|ktp|nip|noid)\\b\\s*[:#.]?\\s*(\\d{16})\\b", RegexOption.IGNORE_CASE),
+            "NIK / KTP",
+        ),
+        CP(
+            RegionKind.NUMBER,
+            Regex("\\b(?:npwp)\\b\\s*[:#.]?\\s*(\\d{2}\\.\\d{3}\\.\\d{3}\\.\\d-\\d{3}\\.\\d{3})", RegexOption.IGNORE_CASE),
+            "NPWP",
+        ),
+        CP(
+            RegionKind.CARD,
+            Regex("\\b(?:no\\.?\\s?rek(?:ening)?|rek(?:ening)?|a\\.?n\\.?|account|bank)\\b\\s*[:#.\\-]?\\s*(?:[a-z]{2,8}\\s)?(\\d{8,16})\\b", RegexOption.IGNORE_CASE),
+            "Bank account",
+        ),
+        CP(
+            RegionKind.NUMBER,
+            Regex("\\b(?:plat|nomor polisi|nopol|tnkb|kendaraan)\\b(?:\\s+[a-z]{1,8}){0,3}\\s*[:#.]?\\s*([A-Z]{1,2}\\s?\\d{1,4}\\s?[A-Z]{0,3})\\b", RegexOption.IGNORE_CASE),
+            "Plat nomor",
+        ),
+    )
+    private val npwpShape = Regex("\\b\\d{2}\\.\\d{3}\\.\\d{3}\\.\\d-\\d{3}\\.\\d{3}\\b")
+
     private val bearer = Regex("\\bBearer\\s+([A-Za-z0-9._~+/=-]{16,255})\\b", RegexOption.IGNORE_CASE)
     private val jwt = Regex("\\beyJ[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\.[A-Za-z0-9_-]{8,}\\b")
     private val privateKeyBegin = Regex("-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----")
@@ -155,6 +183,17 @@ object SensitivePatterns {
         val hits = ArrayList<SensitiveHit>()
         patterns.forEach { p ->
             p.regex.findAll(text).forEach { hits += SensitiveHit(p.kind, it.range, p.label) }
+        }
+        npwpShape.findAll(text).forEach { m ->
+            hits += SensitiveHit(RegionKind.NUMBER, m.range, "NPWP")
+        }
+        contextPatterns.forEach { cp ->
+            cp.regex.findAll(text).forEach { m ->
+                val g = m.groups[1] ?: return@forEach
+                if (hits.none { it.range.covers(g.range) }) {
+                    hits += SensitiveHit(cp.kind, g.range, cp.label)
+                }
+            }
         }
         assignedSecret.findAll(text).forEach { m ->
             val key = m.groups[1]?.value.orEmpty()
@@ -214,7 +253,9 @@ object SensitivePatterns {
             if (digits.length in 8..19 && !alreadyCovered &&
                 !ipv4Candidate.matches(m.value.trim())
             ) {
-                hits += SensitiveHit(RegionKind.NUMBER, m.range, "Number sequence")
+                // 16 digits with a valid province-prefix shape is very likely a NIK.
+                val label = if (digits.length == 16) "NIK / ID number" else "Number sequence"
+                hits += SensitiveHit(RegionKind.NUMBER, m.range, label)
             }
         }
         return hits.distinctBy { Triple(it.kind, it.range.first, it.range.last) }
