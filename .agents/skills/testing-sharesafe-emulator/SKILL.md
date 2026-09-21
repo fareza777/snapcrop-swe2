@@ -20,7 +20,7 @@ description: How to end-to-end test the ShareSafe Android app on the "sharesafe"
 ## Gestures (what actually works)
 - **Long-press**: `adb shell input swipe X Y X Y 700` (same-point, ≥350ms) reliably toggles region multi-select.
 - **Tap a detected region**: its label badge is drawn ABOVE the rect — tap ~40-60 device px below the badge center (interior) or the tap misses. Pure `input tap` jitter can also set the drag "moved" flag; prefer the same-point swipe as a robust "press".
-- **Canvas drags** (draw region / move / crop corner resize) via `adb shell input swipe` are flaky — taps and Compose sliders/scroll-rows work fine, but pointerInput canvas gestures mostly no-op; occasionally a ~1.8s slow drag registers a partial move. A real mouse `left_click_drag` on the emulator window works reliably *if a host display exists* (see below).
+- **Canvas drags** (draw region / move / crop corner resize) via `adb shell input swipe` are flaky — taps and Compose sliders/scroll-rows work fine, but pointerInput canvas gestures mostly no-op or get injected as phantom multi-touch → the canvas PANS instead of moving the region (single-finger can't reach `GestureMode.Transform` legitimately). ~1.8-3s slow drags occasionally register a partial move. Marker-stroke verification trick: strokes render as thin dark bands — deselect first (selection frames confound pixel scans), then compare band positions before/after or source-vs-copy on duplicate.
 - `input text` into an EditText often injects a stray first char (IME race) — clear with `input keyevent 67` ×N, then type WITHOUT re-tapping (field keeps focus), and re-dump to verify before submitting.
 - ANR dialogs ("System UI isn't responding") appear under load — detect via uiautomator and tap "Wait".
 
@@ -44,7 +44,7 @@ If `computer` tool fails with "enigo init failed" and `/tmp/.X11-unix` is empty,
 - `am broadcast/start` with `-a android.intent.action.SEND --eu android.intent.extra.STREAM <uri>` reaches the app but the URI grant does NOT survive `onNewIntent` — the app shows "Could not open this image." and logcat shows `SecurityException ... has no access to content://media/...`. This is a harness artifact, not an app bug.
 - `ACTION_SEND_MULTIPLE` cannot be driven by `am` at all (no Uri-array flag) — verify it by code review or a real app that shares multiple images.
 - **Authentic intake test = self-share loop**: pick an image → Preview & Share → "Safe Share" → the system chooser lists ShareSafe itself as a target (it declares an image intent-filter) → tap it → the app receives its own FileProvider URI with a real grant and goes to "Scanning screenshot" → editor. This exercises `extractSharedImages` → `loadImage` end-to-end.
-- The resumable-queue card: force-stop mid-queue, relaunch → "Resume batch" card appears (Prefs.persistQueue), but picker-URI grants usually die with the process → resume currently lands on "Could not open this image." and clears the card. Expected unless the app starts taking persistable URI permissions.
+- The resumable-queue card: force-stop mid-queue, relaunch → "Resume batch" card appears (Prefs.persistQueue). As of commit 5a5f001 the app calls `takePersistableUriPermission` in loadQueue, so resume WORKS across kills — tap the card and the queued image scans into the editor. On older builds it landed on "Could not open this image."
 
 ## Test image fixtures
 - Push fixtures to `/sdcard/Pictures/` before the run; note MediaStore order changes as you add/remove files. Verify picker state via uiautomator immediately before tapping thumbnails.
