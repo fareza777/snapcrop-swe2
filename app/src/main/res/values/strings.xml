@@ -104,7 +104,9 @@
     <string name="share_chooser">Share redacted image</string>
     <string name="verified_clean">Verified — no scannable codes survive</string>
     <string name="apply_all_note">Beautify &amp; category settings carry over to the next %1$d images — toggle in Settings.</string>
+    <string name="editor_sel_hint">Tap another area to switch • long-press for multi-select</string>
     <string name="save_failed">Save failed</string>
+    <string name="render_failed">Couldn’t render the preview — try again</string>
     <string name="verify_notice">%1$d code(s) still scannable — upgraded to blackout</string>
     <string name="verify_exposed">%1$d code(s) remain scannable (region disabled or uncovered)</string>
 </resources>

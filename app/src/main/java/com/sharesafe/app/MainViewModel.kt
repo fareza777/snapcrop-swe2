@@ -35,8 +35,11 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
+import kotlin.math.min
 
 enum class Screen { HOME, SCANNING, EDITOR, EXPORT }
 
@@ -126,6 +129,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private var previewJob: Job? = null
     var renderedPreview by mutableStateOf<Bitmap?>(null)
         private set
+
+    private companion object {
+        const val PREVIEW_MAX_DIM = 1400
+    }
 
     private var finalRenderJob: Job? = null
     var renderedFinal by mutableStateOf<Bitmap?>(null)
@@ -565,7 +572,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (selectedIds.isEmpty()) return
         pushUndo()
         val copies = regions.filter { it.id in selectedIds }.map { r ->
-            val w = r.rect.width(); val h = r.rect.height()
+            val w = r.rect.width().coerceAtMost(src.width)
+            val h = r.rect.height().coerceAtMost(src.height)
             val l = (r.rect.left + 24).coerceIn(0, src.width - w)
             val t = (r.rect.top + 24).coerceIn(0, src.height - h)
             r.copy(id = RedactRegion.new(r.rect, r.kind).id, rect = Rect(l, t, l + w, t + h))
@@ -579,7 +587,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val src = source ?: return
         regions = regions.map { r ->
             if (r.id != id) r else {
-                val w = r.rect.width(); val h = r.rect.height()
+                val w = r.rect.width().coerceAtMost(src.width)
+                val h = r.rect.height().coerceAtMost(src.height)
                 val l = (r.rect.left + dx).coerceIn(0, src.width - w)
                 val t = (r.rect.top + dy).coerceIn(0, src.height - h)
                 r.copy(rect = Rect(l, t, l + w, t + h))
@@ -620,12 +629,48 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     /** Redacted bitmap in crop space, regions translated. */
     fun renderRedacted(): Bitmap? {
         val src = source ?: return null
-        val crop = cropRect()
+        // Defensive: a stale/edge-case crop outside the bitmap would make
+        // createBitmap throw — inside a coroutine that kills the app.
+        val crop = cropRect().clampTo(src.width, src.height)
+            ?: Rect(0, 0, src.width, src.height)
         val cropped = Bitmap.createBitmap(src, crop.left, crop.top, crop.width(), crop.height())
         val shifted = regions.map {
             it.copy(rect = Rect(it.rect).apply { offset(-crop.left, -crop.top) })
         }
         return ImageRedactor.render(cropped, shifted, defaultStyle, defaultStrength)
+    }
+
+    /**
+     * Preview render at display resolution. Redactions burn at ~1400px then
+     * upscale back to crop space, so canvas coordinates/overlays stay exact —
+     * only the per-region pixel math gets ~4x cheaper per refresh.
+     */
+    private fun renderPreviewBitmap(): Bitmap? {
+        val src = source ?: return null
+        val crop = cropRect().clampTo(src.width, src.height)
+            ?: Rect(0, 0, src.width, src.height)
+        val scale = min(1f, PREVIEW_MAX_DIM.toFloat() / max(crop.width(), crop.height()))
+        if (scale >= 1f) return renderRedacted()
+        val cropped = Bitmap.createBitmap(src, crop.left, crop.top, crop.width(), crop.height())
+        val pw = (crop.width() * scale).toInt().coerceAtLeast(1)
+        val ph = (crop.height() * scale).toInt().coerceAtLeast(1)
+        val work = Bitmap.createScaledBitmap(cropped, pw, ph, true)
+        cropped.recycle()
+        val shifted = regions.map { r ->
+            r.copy(
+                rect = Rect(
+                    ((r.rect.left - crop.left) * scale).toInt(),
+                    ((r.rect.top - crop.top) * scale).toInt(),
+                    ((r.rect.right - crop.left) * scale).toInt(),
+                    ((r.rect.bottom - crop.top) * scale).toInt(),
+                ),
+            )
+        }
+        val small = ImageRedactor.render(work, shifted, defaultStyle, defaultStrength)
+        if (small !== work) work.recycle()
+        val full = Bitmap.createScaledBitmap(small, crop.width(), crop.height(), true)
+        if (full !== small) small.recycle()
+        return full
     }
 
     /**
@@ -692,7 +737,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!livePreview) return
         previewJob?.cancel()
         previewJob = viewModelScope.launch(Dispatchers.Default) {
-            renderedPreview = renderRedacted()
+            // Coalesce bursts (slider drags, region nudges) into one render;
+            // any render failure degrades to the plain image rather than
+            // killing the app through an uncaught coroutine exception.
+            delay(40)
+            val old = renderedPreview
+            renderedPreview = runCatching { renderPreviewBitmap() }.getOrNull()
+            if (renderedPreview != null && old != null && old != renderedPreview) old.recycle()
         }
     }
 
@@ -711,8 +762,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         finalRenderJob?.cancel()
         finalRenderJob = viewModelScope.launch(Dispatchers.Default) {
             verifyNotice = null
-            val redacted = renderVerified() ?: return@launch
-            renderedFinal = Beautifier.render(redacted, beautify)
+            renderedFinal = runCatching {
+                val redacted = renderVerified() ?: return@runCatching null
+                Beautifier.render(redacted, beautify)
+            }.getOrNull()
+            if (renderedFinal == null) {
+                errorMessage = getApplication<Application>().getString(R.string.render_failed)
+            }
         }
     }
 

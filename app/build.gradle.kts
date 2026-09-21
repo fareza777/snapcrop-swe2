@@ -14,8 +14,8 @@ android {
         applicationId = "com.sharesafe.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     // Release signing: drop keystore.properties next to settings.gradle.kts.
@@ -33,7 +33,20 @@ android {
                 storePassword = keystoreProps.getProperty("storePassword")
                 keyAlias = keystoreProps.getProperty("keyAlias")
                 keyPassword = keystoreProps.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
             }
+        }
+    }
+
+    // Per-ABI APK splits for direct sideloading (universal APK stays too).
+    // Play should ship the AAB instead — it splits automatically.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
         }
     }
 

@@ -84,10 +84,11 @@ import com.sharesafe.app.core.RedactRegion
 import com.sharesafe.app.core.RedactStyle
 import com.sharesafe.app.ui.theme.Teal
 import com.sharesafe.app.ui.theme.regionColor
-import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
+
+private fun Offset.isFinite(): Boolean = x.isFinite() && y.isFinite()
 
 private sealed interface GestureMode {
     data object Draw : GestureMode
@@ -573,6 +574,12 @@ private fun SelectionBar(
                 modifier = Modifier.width(38.dp),
             )
         }
+        Text(
+            stringResource(R.string.editor_sel_hint),
+            fontSize = 10.5.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+            modifier = Modifier.padding(top = 2.dp),
+        )
     }
 }
 
@@ -594,6 +601,9 @@ private fun RedactCanvas(
     val imgH = bitmap.height.toFloat()
 
     fun fits(): Pair<Offset, Float> {
+        if (imgW <= 0f || imgH <= 0f || canvasSize.width <= 0f || canvasSize.height <= 0f) {
+            return Offset.Zero to 1f
+        }
         val s = min(canvasSize.width / imgW, canvasSize.height / imgH)
         val ox = (canvasSize.width - imgW * s) / 2f
         val oy = (canvasSize.height - imgH * s) / 2f
@@ -607,16 +617,20 @@ private fun RedactCanvas(
     fun toImage(canvasPt: Offset): Offset {
         val s = totalScale()
         val o = origin()
-        return Offset((canvasPt.x - o.x) / s, (canvasPt.y - o.y) / s)
+        if (!s.isFinite() || s <= 0f || !o.isFinite()) return Offset.Zero
+        val img = Offset((canvasPt.x - o.x) / s, (canvasPt.y - o.y) / s)
+        return if (img.isFinite()) img else Offset.Zero
     }
 
     fun toCanvas(imgPt: Offset): Offset {
         val s = totalScale()
         val o = origin()
+        if (!s.isFinite() || !o.isFinite() || !imgPt.isFinite()) return Offset.Zero
         return Offset(o.x + imgPt.x * s, o.y + imgPt.y * s)
     }
 
     fun hitRegion(imgPt: Offset): RedactRegion? {
+        if (!imgPt.x.isFinite() || !imgPt.y.isFinite()) return null
         val fullX = imgPt.x + cropOriginX
         val fullY = imgPt.y + cropOriginY
         return vm.regions.lastOrNull {
@@ -626,13 +640,15 @@ private fun RedactCanvas(
 
     fun clampPan() {
         val s = totalScale()
+        if (!s.isFinite() || s <= 0f) { userPan = Offset.Zero; userScale = 1f; return }
         val (fitOrigin, _) = fits()
         val drawW = imgW * s
         val drawH = imgH * s
         val margin = 120f
         val ox = (origin().x).coerceIn(-drawW + margin, canvasSize.width - margin)
         val oy = (origin().y).coerceIn(-drawH + margin, canvasSize.height - margin)
-        userPan = Offset(ox, oy) - fitOrigin
+        val next = Offset(ox, oy) - fitOrigin
+        userPan = if (next.isFinite()) next else Offset.Zero
     }
 
     Canvas(
@@ -647,6 +663,7 @@ private fun RedactCanvas(
                     var prevCentroid = Offset.Zero
                     var prevSpan = 0f
                     var moved = false
+                    var undoPushed = false
                     var gestureRegionStart: Rect? = null
                     var gestureCropStart: Rect? = null
 
@@ -710,10 +727,10 @@ private fun RedactCanvas(
                                 GestureMode.Resize(singleSelected.id, handle)
                             }
                             hit != null -> {
-                                // tap = select, long-press = add/remove from selection, drag = move
-                                val lp = withTimeoutOrNull(350) {
-                                    awaitLongPressOrCancellation(down.id)
-                                }
+                                // tap = select, long-press = add/remove from selection, drag = move.
+                                // Returns null on release; non-null change once the system
+                                // long-press timeout fires.
+                                val lp = awaitLongPressOrCancellation(down.id)
                                 if (lp != null) {
                                     vm.toggleSelect(hit.id)
                                     GestureMode.Idle
@@ -743,54 +760,64 @@ private fun RedactCanvas(
 
                         when (val m = mode) {
                             GestureMode.Transform -> {
-                                val pts = pressed.map { it.position }
-                                val centroid = Offset(
-                                    pts.map { it.x }.average().toFloat(),
-                                    pts.map { it.y }.average().toFloat(),
-                                )
-                                val span = if (pts.size >= 2) {
-                                    pts.map {
-                                        sqrt(
-                                            (it.x - centroid.x) * (it.x - centroid.x) +
-                                                (it.y - centroid.y) * (it.y - centroid.y)
-                                        )
-                                    }.average().toFloat()
-                                } else 0f
-
-                                if (prevSpan > 0 && span > 0) {
-                                    val ratio = span / prevSpan
-                                    val base = fits().second
-                                    val newScale = (userScale * ratio).coerceIn(1f, 8f)
-                                    val s = base * userScale
-                                    val o = origin()
-                                    val anchor = Offset(
-                                        (centroid.x - o.x) / s,
-                                        (centroid.y - o.y) / s,
+                                // Only recompute with real touches — an empty `pressed`
+                                // list (all fingers up) would emit a NaN centroid and
+                                // poison pan/scale state, crashing later hit tests.
+                                if (pressed.isNotEmpty()) {
+                                    val pts = pressed.map { it.position }
+                                    val centroid = Offset(
+                                        pts.map { it.x }.average().toFloat(),
+                                        pts.map { it.y }.average().toFloat(),
                                     )
-                                    val newS = base * newScale
-                                    userScale = newScale
-                                    userPan = Offset(
-                                        centroid.x - anchor.x * newS,
-                                        centroid.y - anchor.y * newS,
-                                    ) - fits().first
+                                    val span = if (pts.size >= 2) {
+                                        pts.map {
+                                            sqrt(
+                                                (it.x - centroid.x) * (it.x - centroid.x) +
+                                                    (it.y - centroid.y) * (it.y - centroid.y)
+                                            )
+                                        }.average().toFloat()
+                                    } else 0f
+
+                                    if (centroid.isFinite() && span.isFinite()) {
+                                        if (prevSpan > 0 && span > 0) {
+                                            val ratio = span / prevSpan
+                                            val base = fits().second
+                                            val newScale = (userScale * ratio).coerceIn(1f, 8f)
+                                            val s = base * userScale
+                                            val o = origin()
+                                            if (s > 0 && s.isFinite() && o.isFinite()) {
+                                                val anchor = Offset(
+                                                    (centroid.x - o.x) / s,
+                                                    (centroid.y - o.y) / s,
+                                                )
+                                                val newS = base * newScale
+                                                userScale = newScale
+                                                userPan = Offset(
+                                                    centroid.x - anchor.x * newS,
+                                                    centroid.y - anchor.y * newS,
+                                                ) - fits().first
+                                            }
+                                        }
+                                        if (prevCentroid != Offset.Zero) {
+                                            userPan += centroid - prevCentroid
+                                        }
+                                        prevCentroid = centroid
+                                        prevSpan = span
+                                    }
+                                    clampPan()
+                                    moved = true
                                 }
-                                if (prevCentroid != Offset.Zero) {
-                                    userPan += centroid - prevCentroid
-                                }
-                                prevCentroid = centroid
-                                prevSpan = span
-                                clampPan()
-                                moved = true
                             }
                             is GestureMode.Move -> {
                                 val p = event.changes.firstOrNull { it.id == down.id }
-                                    ?: event.changes.first()
+                                    ?: event.changes.firstOrNull() ?: break
                                 val curImg = toImage(p.position)
                                 if (p.positionChange() != Offset.Zero) {
                                     moved = true
                                     val dx = (curImg.x - lastImg.x).roundToInt()
                                     val dy = (curImg.y - lastImg.y).roundToInt()
                                     if (dx != 0 || dy != 0) {
+                                        if (!undoPushed) { vm.beginGesture(); undoPushed = true }
                                         vm.moveRegion(m.regionId, dx, dy)
                                         lastImg = Offset(curImg.x - dx, curImg.y - dy)
                                     }
@@ -798,7 +825,7 @@ private fun RedactCanvas(
                             }
                             is GestureMode.Resize -> {
                                 val p = event.changes.firstOrNull { it.id == down.id }
-                                    ?: event.changes.first()
+                                    ?: event.changes.firstOrNull() ?: break
                                 val curImg = toImage(p.position)
                                 moved = true
                                 val start = gestureRegionStart
@@ -836,7 +863,7 @@ private fun RedactCanvas(
                             }
                             GestureMode.CropMove -> {
                                 val p = event.changes.firstOrNull { it.id == down.id }
-                                    ?: event.changes.first()
+                                    ?: event.changes.firstOrNull() ?: break
                                 val curImg = toImage(p.position)
                                 if (p.positionChange() != Offset.Zero) {
                                     moved = true
@@ -862,7 +889,7 @@ private fun RedactCanvas(
                             }
                             GestureMode.CropDraw -> {
                                 val p = event.changes.firstOrNull { it.id == down.id }
-                                    ?: event.changes.first()
+                                    ?: event.changes.firstOrNull() ?: break
                                 val curImg = toImage(p.position)
                                 if (p.positionChange() != Offset.Zero) moved = true
                                 cropDraft = Rect(
@@ -874,7 +901,7 @@ private fun RedactCanvas(
                             }
                             GestureMode.Draw -> {
                                 val p = event.changes.firstOrNull { it.id == down.id }
-                                    ?: event.changes.first()
+                                    ?: event.changes.firstOrNull() ?: break
                                 val curImg = toImage(p.position)
                                 if (p.positionChange() != Offset.Zero) moved = true
                                 dragRect = Rect(
@@ -905,7 +932,10 @@ private fun RedactCanvas(
                                     dragRect = null
                                 }
                                 is GestureMode.Move -> {
-                                    if (!moved) vm.select(m.regionId)
+                                    if (!moved) vm.select(m.regionId) else vm.refreshPreview()
+                                }
+                                is GestureMode.Resize -> {
+                                    vm.refreshPreview()
                                 }
                                 is GestureMode.CropResize,
                                 GestureMode.CropMove,

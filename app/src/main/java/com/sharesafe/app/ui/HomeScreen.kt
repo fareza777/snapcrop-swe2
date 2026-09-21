@@ -8,6 +8,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,9 +47,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -64,6 +68,24 @@ fun HomeScreen(vm: MainViewModel, error: String?, onPick: () -> Unit) {
     var showSettings by remember { mutableStateOf(false) }
 
     Box(Modifier.fillMaxSize()) {
+        // Ambient glow behind the hero — premium depth cue, no assets needed.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(420.dp)
+                .align(Alignment.TopCenter)
+                .background(
+                    Brush.radialGradient(
+                        listOf(
+                            Teal.copy(alpha = 0.14f),
+                            Teal.copy(alpha = 0.05f),
+                            Color.Transparent,
+                        ),
+                        radius = 1100f,
+                    )
+                ),
+        )
+
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -73,7 +95,39 @@ fun HomeScreen(vm: MainViewModel, error: String?, onPick: () -> Unit) {
                 .padding(horizontal = 26.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    modifier = Modifier.weight(1f),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(AccentBrush),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "S",
+                            color = Color(0xFF08110E),
+                            fontWeight = FontWeight.Black,
+                            fontSize = 14.sp,
+                        )
+                    }
+                    Text(
+                        "ShareSafe",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 15.sp,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        letterSpacing = 0.2.sp,
+                    )
+                }
                 IconButton(onClick = { showSettings = true }) {
                     Icon(
                         Icons.Outlined.Settings, stringResource(R.string.settings),
@@ -81,39 +135,57 @@ fun HomeScreen(vm: MainViewModel, error: String?, onPick: () -> Unit) {
                     )
                 }
             }
-            Spacer(Modifier.height(20.dp))
+            Spacer(Modifier.height(30.dp))
 
-            // Shield mark
-            Box(
-                modifier = Modifier
-                    .size(96.dp)
-                    .clip(RoundedCornerShape(28.dp))
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                Teal.copy(alpha = 0.16f),
-                                Cyan.copy(alpha = 0.10f),
+            // Hero shield — layered glass tiles + halo rings.
+            Box(contentAlignment = Alignment.Center) {
+                listOf(172.dp to 0.05f, 138.dp to 0.08f).forEach { (d, a) ->
+                    Box(
+                        modifier = Modifier
+                            .size(d)
+                            .clip(RoundedCornerShape(d / 2.6f))
+                            .border(1.dp, Teal.copy(alpha = a), RoundedCornerShape(d / 2.6f)),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(104.dp)
+                        .clip(RoundedCornerShape(30.dp))
+                        .background(
+                            Brush.linearGradient(
+                                listOf(
+                                    Teal.copy(alpha = 0.22f),
+                                    Cyan.copy(alpha = 0.10f),
+                                ),
+                                start = Offset(0f, 0f),
+                                end = Offset(Float.POSITIVE_INFINITY, Float.POSITIVE_INFINITY),
                             )
                         )
+                        .border(
+                            1.2.dp,
+                            Brush.linearGradient(
+                                listOf(Teal.copy(alpha = 0.7f), Cyan.copy(alpha = 0.25f))
+                            ),
+                            RoundedCornerShape(30.dp),
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Shield,
+                        contentDescription = null,
+                        tint = Teal,
+                        modifier = Modifier.size(54.dp),
                     )
-                    .border(1.dp, Teal.copy(alpha = 0.35f), RoundedCornerShape(28.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Outlined.Shield,
-                    contentDescription = null,
-                    tint = Teal,
-                    modifier = Modifier.size(52.dp),
-                )
+                }
             }
 
             Spacer(Modifier.height(26.dp))
             Text(
                 "ShareSafe",
-                fontSize = 34.sp,
+                fontSize = 36.sp,
                 fontWeight = FontWeight.Black,
-                color = MaterialTheme.colorScheme.onBackground,
                 letterSpacing = (-0.5).sp,
+                style = TextStyle(brush = AccentBrush),
             )
             Spacer(Modifier.height(10.dp))
             Text(
@@ -140,9 +212,9 @@ fun HomeScreen(vm: MainViewModel, error: String?, onPick: () -> Unit) {
                     modifier = Modifier
                         .fillMaxWidth()
                         .widthIn(max = 420.dp)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(16.dp))
                         .background(MaterialTheme.colorScheme.surface)
-                        .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(14.dp))
+                        .border(1.dp, Teal.copy(alpha = 0.3f), RoundedCornerShape(16.dp))
                         .clickable { vm.resumeSavedQueue() }
                         .padding(14.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -167,7 +239,7 @@ fun HomeScreen(vm: MainViewModel, error: String?, onPick: () -> Unit) {
                 }
             }
 
-            Spacer(Modifier.height(30.dp))
+            Spacer(Modifier.height(34.dp))
             GradientButton(text = stringResource(R.string.home_pick), onClick = onPick)
             Spacer(Modifier.height(14.dp))
             Text(
@@ -176,37 +248,62 @@ fun HomeScreen(vm: MainViewModel, error: String?, onPick: () -> Unit) {
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            Spacer(Modifier.height(40.dp))
+            Spacer(Modifier.height(36.dp))
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceEvenly,
+            // Feature grid — glass tiles instead of bare chips.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 460.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                FeatureChip(Icons.Outlined.TextFields, stringResource(R.string.chip_ocr))
-                FeatureChip(Icons.Outlined.FaceRetouchingOff, stringResource(R.string.chip_face))
-                FeatureChip(Icons.Outlined.QrCodeScanner, stringResource(R.string.chip_qr))
-                FeatureChip(Icons.Outlined.CropFree, stringResource(R.string.chip_crop))
-                FeatureChip(Icons.Outlined.AutoFixHigh, stringResource(R.string.chip_beautify))
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FeatureTile(Icons.Outlined.TextFields, stringResource(R.string.chip_ocr), Modifier.weight(1f))
+                    FeatureTile(Icons.Outlined.FaceRetouchingOff, stringResource(R.string.chip_face), Modifier.weight(1f))
+                    FeatureTile(Icons.Outlined.QrCodeScanner, stringResource(R.string.chip_qr), Modifier.weight(1f))
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    FeatureTile(Icons.Outlined.CropFree, stringResource(R.string.chip_crop), Modifier.weight(1f))
+                    FeatureTile(Icons.Outlined.AutoFixHigh, stringResource(R.string.chip_beautify), Modifier.weight(1f))
+                    // Privacy badge tile balances the grid.
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(
+                                Brush.linearGradient(
+                                    listOf(
+                                        Teal.copy(alpha = 0.14f),
+                                        Cyan.copy(alpha = 0.07f),
+                                    )
+                                )
+                            )
+                            .border(1.dp, Teal.copy(alpha = 0.30f), RoundedCornerShape(18.dp))
+                            .aspectRatio(1f)
+                            .padding(10.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(Teal),
+                            )
+                            Spacer(Modifier.height(9.dp))
+                            Text(
+                                stringResource(R.string.home_private),
+                                fontSize = 10.5.sp,
+                                lineHeight = 13.sp,
+                                textAlign = TextAlign.Center,
+                                color = Teal,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                }
             }
-
-            Spacer(Modifier.height(22.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(7.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .clip(CircleShape)
-                        .background(Teal),
-                )
-                Text(
-                    stringResource(R.string.home_private),
-                    fontSize = 12.sp,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(Modifier.height(26.dp))
+            Spacer(Modifier.height(28.dp))
         }
     }
 
@@ -320,30 +417,46 @@ private fun SettingSwitch(label: String, sub: String, checked: Boolean, onChange
 }
 
 @Composable
-private fun FeatureChip(icon: ImageVector, label: String) {
-    Column(horizontalAlignment = Alignment.CenterHorizontally) {
-        Box(
-            modifier = Modifier
-                .size(50.dp)
-                .clip(RoundedCornerShape(15.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(15.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.primary,
-                modifier = Modifier.size(22.dp),
+private fun FeatureTile(icon: ImageVector, label: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(18.dp))
+            .background(MaterialTheme.colorScheme.surface)
+            .border(1.dp, MaterialTheme.colorScheme.outline, RoundedCornerShape(18.dp))
+            .aspectRatio(1f),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                Teal.copy(alpha = 0.16f),
+                                Cyan.copy(alpha = 0.10f),
+                            )
+                        )
+                    )
+                    .border(1.dp, Teal.copy(alpha = 0.22f), RoundedCornerShape(14.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(21.dp),
+                )
+            }
+            Spacer(Modifier.height(9.dp))
+            Text(
+                label,
+                fontSize = 10.5.sp,
+                lineHeight = 13.sp,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Spacer(Modifier.height(7.dp))
-        Text(
-            label,
-            fontSize = 10.5.sp,
-            lineHeight = 13.sp,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
