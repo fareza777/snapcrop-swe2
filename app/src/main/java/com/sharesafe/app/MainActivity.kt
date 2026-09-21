@@ -95,6 +95,11 @@ private fun ShareSafeRoot(
         }
     }
 
+    // Poll for a newly taken screenshot whenever Home is shown (opt-in).
+    androidx.compose.runtime.LaunchedEffect(vm.screen) {
+        if (vm.screen == Screen.HOME) vm.checkNewScreenshot()
+    }
+
     BackHandler(enabled = vm.screen != Screen.HOME) {
         when (vm.screen) {
             Screen.EXPORT -> vm.navigateTo(Screen.EDITOR)

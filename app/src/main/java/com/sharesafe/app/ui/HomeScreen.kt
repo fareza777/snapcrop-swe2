@@ -1,5 +1,7 @@
 package com.sharesafe.app.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,6 +29,7 @@ import androidx.compose.material.icons.outlined.CropFree
 import androidx.compose.material.icons.outlined.FaceRetouchingOff
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.Screenshot
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material.icons.outlined.TextFields
@@ -59,6 +62,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sharesafe.app.MainViewModel
 import com.sharesafe.app.R
+import com.sharesafe.app.core.CustomRule
+import com.sharesafe.app.core.ScreenshotWatcher
 import com.sharesafe.app.ui.theme.AccentBrush
 import com.sharesafe.app.ui.theme.Cyan
 import com.sharesafe.app.ui.theme.Teal
@@ -204,6 +209,40 @@ fun HomeScreen(vm: MainViewModel, error: String?, onPick: () -> Unit) {
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center,
                 )
+            }
+
+            vm.pendingScreenshot?.let { _ ->
+                Spacer(Modifier.height(18.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .widthIn(max = 420.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(1.dp, Teal.copy(alpha = 0.45f), RoundedCornerShape(16.dp))
+                        .clickable { vm.openPendingScreenshot() }
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Icon(Icons.Outlined.Screenshot, null, tint = Teal, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            stringResource(R.string.new_shot_title),
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            stringResource(R.string.new_shot_sub),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = { vm.dismissPendingScreenshot() }) {
+                        Text(stringResource(R.string.dismiss))
+                    }
+                }
             }
 
             vm.resumableQueue?.let { (uris, pos) ->
@@ -375,6 +414,102 @@ private fun SettingsSheet(vm: MainViewModel, onClose: () -> Unit) {
                     TextButton(onClick = { vm.updateBlacklist(vm.blacklist - word) }) {
                         Text(stringResource(R.string.remove), color = MaterialTheme.colorScheme.error)
                     }
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+            SectionLabel(stringResource(R.string.settings_rules))
+            Spacer(Modifier.height(6.dp))
+            Text(
+                stringResource(R.string.settings_rules_sub),
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(10.dp))
+            var ruleLabel by remember { mutableStateOf("") }
+            var rulePattern by remember { mutableStateOf("") }
+            var ruleError by remember { mutableStateOf(false) }
+            OutlinedTextField(
+                value = ruleLabel,
+                onValueChange = { ruleLabel = it },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text(stringResource(R.string.rule_label_ph), fontSize = 13.sp) },
+                singleLine = true,
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = rulePattern,
+                    onValueChange = { rulePattern = it; ruleError = false },
+                    modifier = Modifier.weight(1f),
+                    placeholder = { Text(stringResource(R.string.rule_pattern_ph), fontSize = 13.sp) },
+                    singleLine = true,
+                    isError = ruleError,
+                )
+                TextButton(
+                    onClick = {
+                        val rule = CustomRule(ruleLabel.trim(), rulePattern.trim())
+                        if (rule.toRegex() != null && ruleLabel.isNotBlank() && rulePattern.isNotBlank()) {
+                            vm.updateCustomRules(vm.customRules + rule)
+                            ruleLabel = ""; rulePattern = ""
+                        } else {
+                            ruleError = true
+                        }
+                    },
+                ) { Text(stringResource(R.string.add)) }
+            }
+            if (ruleError) {
+                Text(
+                    stringResource(R.string.rule_invalid),
+                    fontSize = 11.5.sp,
+                    color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
+                )
+            }
+            Spacer(Modifier.height(8.dp))
+            vm.customRules.forEach { rule ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            rule.label.uppercase(),
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            rule.pattern,
+                            fontSize = 11.5.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(onClick = {
+                        vm.updateCustomRules(vm.customRules.filter { it != rule })
+                    }) {
+                        Text(stringResource(R.string.remove), color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(18.dp))
+            SectionLabel(stringResource(R.string.settings_watch))
+            val context = androidx.compose.ui.platform.LocalContext.current
+            val watchLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission(),
+            ) { granted -> vm.updateWatchScreenshots(granted) }
+            SettingSwitch(
+                label = stringResource(R.string.settings_watch_shots),
+                sub = stringResource(R.string.settings_watch_shots_sub),
+                checked = vm.watchScreenshots && ScreenshotWatcher.hasPermission(context),
+            ) { on ->
+                if (on && !ScreenshotWatcher.hasPermission(context)) {
+                    watchLauncher.launch(ScreenshotWatcher.requiredPermission())
+                } else {
+                    vm.updateWatchScreenshots(on)
                 }
             }
 

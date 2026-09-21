@@ -94,4 +94,7 @@ fun regionColor(kind: com.sharesafe.app.core.RegionKind): Color = when (kind) {
     com.sharesafe.app.core.RegionKind.CODE -> Color(0xFFF472D0)
     com.sharesafe.app.core.RegionKind.FACE -> Color(0xFFB197FC)
     com.sharesafe.app.core.RegionKind.MANUAL -> Color(0xFFFFD43B)
+    com.sharesafe.app.core.RegionKind.DATETIME -> Color(0xFF94D82D)
+    com.sharesafe.app.core.RegionKind.TRACKING -> Color(0xFFFF8787)
+    com.sharesafe.app.core.RegionKind.CUSTOM -> Color(0xFF38BDF8)
 }

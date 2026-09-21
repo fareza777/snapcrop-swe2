@@ -36,6 +36,7 @@
     <string name="scanning_title">Scanning screenshot</string>
     <string name="scanning_loading">Loading image…</string>
     <string name="scanning_ocr">Reading text (on-device OCR)…</string>
+    <string name="scanning_entities">Extracting entities…</string>
     <string name="scanning_faces">Detecting faces…</string>
     <string name="scanning_codes">Scanning QR &amp; barcodes…</string>
     <string name="scanning_done">Done</string>
@@ -109,4 +110,32 @@
     <string name="render_failed">Couldn’t render the preview — try again</string>
     <string name="verify_notice">%1$d code(s) still scannable — upgraded to blackout</string>
     <string name="verify_exposed">%1$d code(s) remain scannable (region disabled or uncovered)</string>
+
+    <!-- v1.2: presets, marker, word map, similar, emoji, peek, watcher, rules -->
+    <string name="marker_toggle">Marker pen</string>
+    <string name="menu_presets">Redaction presets</string>
+    <string name="menu_word_map">Word map</string>
+    <string name="presets_title">Redaction presets</string>
+    <string name="presets_subtitle">Apply a whole profile to every detected area</string>
+    <string name="preset_bank">Banking</string>
+    <string name="preset_bank_sub">Cards, NIK &amp; numbers get blackout; contacts pixelate</string>
+    <string name="preset_social">Social media</string>
+    <string name="preset_social_sub">Faces get emoji covers; contacts &amp; numbers blacked out</string>
+    <string name="preset_work">Work</string>
+    <string name="preset_work_sub">Keys &amp; cards blackout; emails, phones pixelate</string>
+    <string name="similar_badge">Similar ×%1$d</string>
+    <string name="settings_rules">Custom rules</string>
+    <string name="settings_rules_sub">Your own detectors — regex, or wildcards: # digit, ? letter/digit, * anything. Example: EMP-####</string>
+    <string name="rule_label_ph">Label, e.g. Employee ID</string>
+    <string name="rule_pattern_ph">Pattern, e.g. EMP-#### or ID-\\d+</string>
+    <string name="rule_invalid">Invalid pattern — check the syntax</string>
+    <string name="settings_watch">Screenshot watcher</string>
+    <string name="settings_watch_shots">Check for new screenshots</string>
+    <string name="settings_watch_shots_sub">On open, offer to redact your newest screenshot. Needs image-read permission.</string>
+    <string name="new_shot_title">New screenshot found</string>
+    <string name="new_shot_sub">Tap to redact it now</string>
+    <string name="hold_peek">Hold to peek</string>
+    <string name="peeking_original">ORIGINAL</string>
+    <string name="metadata_clean">Metadata clean — no EXIF, random filename</string>
+    <string name="share_whatsapp">Share to WhatsApp</string>
 </resources>

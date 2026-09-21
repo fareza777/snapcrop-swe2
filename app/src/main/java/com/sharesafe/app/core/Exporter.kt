@@ -14,9 +14,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import android.os.Build
 import java.io.File
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 enum class ExportFormat(val label: String, val ext: String, val mime: String) {
     PNG("PNG", "png", "image/png"),
@@ -48,13 +45,23 @@ object Exporter {
         return flat
     }
 
+    /**
+     * Randomized filename — a timestamp leaks when the screenshot was taken and
+     * makes gallery filenames enumerable; a random tag reveals nothing.
+     */
+    private fun randomName(format: ExportFormat): String {
+        val bytes = ByteArray(4)
+        java.security.SecureRandom().nextBytes(bytes)
+        return "img_${bytes.joinToString("") { "%02x".format(it) }}.${format.ext}"
+    }
+
     /** Saves into Pictures/ShareSafe via MediaStore — no permission needed on API 29+. */
     suspend fun saveToGallery(
         context: Context,
         bitmap: Bitmap,
         format: ExportFormat = ExportFormat.PNG,
     ): Uri? = withContext(Dispatchers.IO) {
-        val name = "ShareSafe-${timestamp()}.${format.ext}"
+        val name = randomName(format)
         val values = ContentValues().apply {
             put(MediaStore.Images.Media.DISPLAY_NAME, name)
             put(MediaStore.Images.Media.MIME_TYPE, format.mime)
@@ -95,7 +102,7 @@ object Exporter {
     ): Uri = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "shared").apply { mkdirs() }
         dir.listFiles()?.forEach { it.delete() }
-        val file = File(dir, "ShareSafe-${timestamp()}.${format.ext}")
+        val file = File(dir, randomName(format))
         val out = flattenIfNeeded(bitmap, format)
         file.outputStream().use { out.compress(format.compressFormat(), 95, it) }
         FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", file)
@@ -108,6 +115,12 @@ object Exporter {
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
 
-    private fun timestamp(): String =
-        SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())
+    /** Direct WhatsApp intent — null when WhatsApp isn't installed. */
+    fun whatsappIntent(uri: Uri, mime: String): Intent =
+        Intent(Intent.ACTION_SEND).apply {
+            type = mime
+            setPackage("com.whatsapp")
+            putExtra(Intent.EXTRA_STREAM, uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
 }

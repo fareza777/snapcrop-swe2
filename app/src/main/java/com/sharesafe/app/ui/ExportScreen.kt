@@ -27,7 +27,9 @@ import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.SaveAlt
+import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
@@ -37,7 +39,11 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +55,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
@@ -62,7 +69,9 @@ import com.sharesafe.app.core.ExportFormat
 import com.sharesafe.app.core.Exporter
 import com.sharesafe.app.ui.theme.AccentBrush
 import com.sharesafe.app.ui.theme.Teal
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.roundToInt
 
 @Composable
@@ -72,6 +81,15 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
     val scope = rememberCoroutineScope()
     var shareBusy by remember { mutableStateOf(false) }
     var saveDone by remember { mutableStateOf(false) }
+    var peeking by remember { mutableStateOf(false) }
+    var peekBitmap by remember { mutableStateOf<android.graphics.Bitmap?>(null) }
+
+    // Lazily render the un-redacted variant once the user first peeks.
+    LaunchedEffect(peeking) {
+        if (peeking && peekBitmap == null) {
+            peekBitmap = withContext(Dispatchers.Default) { vm.renderOriginal() }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -123,16 +141,68 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
             ) {
                 val final = vm.renderedFinal
                 if (final != null) {
+                    // Hold-to-peek: press and hold to compare against the
+                    // original (un-redacted) render beneath.
+                    val shown = if (peeking) peekBitmap ?: final else final
                     Image(
-                        bitmap = final.asImageBitmap(),
+                        bitmap = shown.asImageBitmap(),
                         contentDescription = stringResource(R.string.redacted_preview_cd),
                         contentScale = ContentScale.Fit,
                         modifier = Modifier
                             .fillMaxWidth()
                             .aspectRatio(
-                                final.width.toFloat() / final.height.toFloat()
-                            ),
+                                shown.width.toFloat() / shown.height.toFloat()
+                            )
+                            .pointerInput(final) {
+                                awaitEachGesture {
+                                    awaitFirstDown(requireUnconsumed = false)
+                                    peeking = true
+                                    waitForUpOrCancellation()
+                                    peeking = false
+                                }
+                            },
                     )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(10.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.Black.copy(alpha = 0.55f))
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(
+                                Icons.Outlined.Visibility, null,
+                                tint = Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.size(12.dp),
+                            )
+                            Text(
+                                stringResource(R.string.hold_peek),
+                                fontSize = 10.sp,
+                                color = Color.White.copy(alpha = 0.85f),
+                            )
+                        }
+                    }
+                    if (peeking) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.TopStart)
+                                .padding(10.dp)
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(MaterialTheme.colorScheme.error)
+                                .padding(horizontal = 8.dp, vertical = 4.dp),
+                        ) {
+                            Text(
+                                stringResource(R.string.peeking_original),
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White,
+                            )
+                        }
+                    }
                 } else {
                     Text(
                         stringResource(R.string.rendering),
@@ -168,6 +238,18 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                         stringResource(R.string.verified_clean),
                         fontSize = 11.5.sp,
                         color = Teal,
+                    )
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.padding(top = 4.dp),
+                ) {
+                    Icon(Icons.Outlined.VerifiedUser, null, tint = Teal.copy(alpha = 0.8f), modifier = Modifier.size(14.dp))
+                    Text(
+                        stringResource(R.string.metadata_clean),
+                        fontSize = 11.sp,
+                        color = Teal.copy(alpha = 0.8f),
                     )
                 }
             }
@@ -255,25 +337,67 @@ fun ExportScreen(vm: MainViewModel, onBack: () -> Unit, onFinish: () -> Unit) {
                 .navigationBarsPadding()
                 .padding(horizontal = 16.dp),
         ) {
-            GradientButton(
-                text = if (shareBusy) stringResource(R.string.preparing) else stringResource(R.string.safe_share),
-                onClick = {
-                    shareBusy = true
-                    scope.launch {
-                        val uri = vm.shareUri(context)
-                        shareBusy = false
-                        if (uri != null) {
-                            context.startActivity(
-                                android.content.Intent.createChooser(
-                                    Exporter.shareIntent(uri, vm.exportFormat.mime),
-                                    chooserTitle,
-                                )
-                            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.weight(1f)) {
+                    GradientButton(
+                        text = if (shareBusy) stringResource(R.string.preparing) else stringResource(R.string.safe_share),
+                        onClick = {
+                            shareBusy = true
+                            scope.launch {
+                                val uri = vm.shareUri(context)
+                                shareBusy = false
+                                if (uri != null) {
+                                    context.startActivity(
+                                        android.content.Intent.createChooser(
+                                            Exporter.shareIntent(uri, vm.exportFormat.mime),
+                                            chooserTitle,
+                                        )
+                                    )
+                                }
+                            }
+                        },
+                        enabled = vm.renderedFinal != null && !shareBusy,
+                    )
+                }
+                // WhatsApp quick-share — direct target, skips the chooser.
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(MaterialTheme.colorScheme.surface)
+                        .border(
+                            1.dp,
+                            MaterialTheme.colorScheme.outline,
+                            RoundedCornerShape(16.dp),
+                        )
+                        .clickable(enabled = vm.renderedFinal != null && !shareBusy) {
+                            shareBusy = true
+                            scope.launch {
+                                val uri = vm.shareUri(context)
+                                shareBusy = false
+                                if (uri != null) {
+                                    runCatching {
+                                        context.startActivity(
+                                            Exporter.whatsappIntent(uri, vm.exportFormat.mime)
+                                        )
+                                    }
+                                }
+                            }
                         }
-                    }
-                },
-                enabled = vm.renderedFinal != null && !shareBusy,
-            )
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Send,
+                        stringResource(R.string.share_whatsapp),
+                        tint = Teal,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
             Spacer(Modifier.height(10.dp))
             Row(
                 modifier = Modifier.fillMaxWidth(),

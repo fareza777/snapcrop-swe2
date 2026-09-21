@@ -14,8 +14,8 @@ android {
         applicationId = "com.sharesafe.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 4
+        versionName = "1.2"
     }
 
     // Release signing: drop keystore.properties next to settings.gradle.kts.
@@ -105,6 +105,7 @@ dependencies {
     implementation(libs.mlkit.textrecognition)
     implementation(libs.mlkit.facedetection)
     implementation(libs.mlkit.barcodescanning)
+    implementation(libs.mlkit.entityextraction)
     implementation(libs.androidx.exifinterface)
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)

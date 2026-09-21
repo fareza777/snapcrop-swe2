@@ -13,6 +13,10 @@ object Prefs {
     private const val KEY_DISABLED_KINDS = "disabled_kinds"
     private const val KEY_QUEUE = "queue_uris"
     private const val KEY_QUEUE_POS = "queue_pos"
+    private const val KEY_CUSTOM_RULES = "custom_rules"
+    private const val KEY_WATCH_SHOTS = "watch_screenshots"
+    private const val KEY_LAST_SHOT = "last_shot_seen"
+    private const val KEY_LAST_EMOJI = "last_emoji"
 
     private fun prefs(context: Context) =
         context.getSharedPreferences(FILE, Context.MODE_PRIVATE)
@@ -56,6 +60,48 @@ object Prefs {
 
     fun setDisabledKinds(context: Context, kinds: Set<String>) {
         prefs(context).edit().putStringSet(KEY_DISABLED_KINDS, kinds).apply()
+    }
+
+    // ---- custom detection rules ("label\u0001pattern" entries) ----
+    fun customRules(context: Context): List<CustomRule> =
+        prefs(context).getStringSet(KEY_CUSTOM_RULES, emptySet()).orEmpty()
+            .mapNotNull { raw ->
+                val sep = raw.indexOf('\u0001')
+                if (sep <= 0) null
+                else CustomRule(raw.take(sep).trim(), raw.substring(sep + 1).trim())
+            }
+            .filter { it.label.isNotEmpty() && it.pattern.isNotEmpty() }
+            .sortedBy { it.label.lowercase() }
+
+    fun setCustomRules(context: Context, rules: List<CustomRule>) {
+        prefs(context).edit().putStringSet(
+            KEY_CUSTOM_RULES,
+            rules.map { it.label.trim() + "\u0001" + it.pattern.trim() }.toSet(),
+        ).apply()
+    }
+
+    // ---- screenshot watcher (opt-in, needs media read permission) ----
+    fun watchScreenshots(context: Context): Boolean =
+        prefs(context).getBoolean(KEY_WATCH_SHOTS, false)
+
+    fun setWatchScreenshots(context: Context, on: Boolean) {
+        prefs(context).edit().putBoolean(KEY_WATCH_SHOTS, on).apply()
+    }
+
+    /** MediaStore DATE_ADDED (seconds) of the newest screenshot we've surfaced. */
+    fun lastShotSeen(context: Context): Long =
+        prefs(context).getLong(KEY_LAST_SHOT, 0L)
+
+    fun setLastShotSeen(context: Context, sec: Long) {
+        prefs(context).edit().putLong(KEY_LAST_SHOT, sec).apply()
+    }
+
+    fun lastEmoji(context: Context): String =
+        prefs(context).getString(KEY_LAST_EMOJI, ImageRedactor.DEFAULT_EMOJI)
+            ?: ImageRedactor.DEFAULT_EMOJI
+
+    fun setLastEmoji(context: Context, emoji: String) {
+        prefs(context).edit().putString(KEY_LAST_EMOJI, emoji).apply()
     }
 
     // ---- resumable queue (best effort — only usable while URI grants live) ----

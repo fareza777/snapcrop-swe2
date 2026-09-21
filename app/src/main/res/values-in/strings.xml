@@ -33,6 +33,7 @@
     <string name="scanning_title">Memindai screenshot</string>
     <string name="scanning_loading">Memuat gambar…</string>
     <string name="scanning_ocr">Membaca teks (OCR di perangkat)…</string>
+    <string name="scanning_entities">Mengekstrak entitas…</string>
     <string name="scanning_faces">Mendeteksi wajah…</string>
     <string name="scanning_codes">Memindai QR &amp; barcode…</string>
     <string name="scanning_done">Selesai</string>
@@ -102,4 +103,32 @@
     <string name="render_failed">Gagal merender preview — coba lagi</string>
     <string name="verify_notice">%1$d kode masih terbaca — ditingkatkan ke blackout</string>
     <string name="verify_exposed">%1$d kode masih dapat dibaca (region nonaktif atau tak tercakup)</string>
+
+    <!-- v1.2 -->
+    <string name="marker_toggle">Pena marker</string>
+    <string name="menu_presets">Preset sensor</string>
+    <string name="menu_word_map">Peta kata</string>
+    <string name="presets_title">Preset sensor</string>
+    <string name="presets_subtitle">Terapkan satu profil ke semua area terdeteksi</string>
+    <string name="preset_bank">Perbankan</string>
+    <string name="preset_bank_sub">Kartu, NIK &amp; angka jadi blackout; kontak pixelate</string>
+    <string name="preset_social">Media sosial</string>
+    <string name="preset_social_sub">Wajah ditutup emoji; kontak &amp; angka blackout</string>
+    <string name="preset_work">Pekerjaan</string>
+    <string name="preset_work_sub">Kunci &amp; kartu blackout; email, telepon pixelate</string>
+    <string name="similar_badge">Sama ×%1$d</string>
+    <string name="settings_rules">Aturan kustom</string>
+    <string name="settings_rules_sub">Detektor buatanmu — regex, atau wildcard: # digit, ? huruf/digit, * bebas. Contoh: EMP-####</string>
+    <string name="rule_label_ph">Label, mis. ID Karyawan</string>
+    <string name="rule_pattern_ph">Pola, mis. EMP-#### atau ID-\\d+</string>
+    <string name="rule_invalid">Pola tidak valid — periksa sintaksnya</string>
+    <string name="settings_watch">Pengawas screenshot</string>
+    <string name="settings_watch_shots">Cek screenshot baru</string>
+    <string name="settings_watch_shots_sub">Saat dibuka, tawarkan sensor screenshot terbaru. Perlu izin baca gambar.</string>
+    <string name="new_shot_title">Screenshot baru ditemukan</string>
+    <string name="new_shot_sub">Ketuk untuk sensor sekarang</string>
+    <string name="hold_peek">Tahan untuk intip</string>
+    <string name="peeking_original">ASLI</string>
+    <string name="metadata_clean">Metadata bersih — tanpa EXIF, nama file acak</string>
+    <string name="share_whatsapp">Bagikan ke WhatsApp</string>
 </resources>

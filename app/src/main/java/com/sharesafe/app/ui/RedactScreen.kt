@@ -34,22 +34,28 @@ import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Crop
 import androidx.compose.material.icons.outlined.CropFree
 import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.DynamicFeed
+import androidx.compose.material.icons.outlined.EmojiEmotions
+import androidx.compose.material.icons.outlined.Face
+import androidx.compose.material.icons.outlined.Gesture
+import androidx.compose.material.icons.outlined.GridOn
 import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.SelectAll
+import androidx.compose.material.icons.outlined.Shield
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.Visibility
 import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
@@ -65,6 +71,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
@@ -78,6 +86,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.sharesafe.app.MainViewModel
+import com.sharesafe.app.Preset
 import com.sharesafe.app.R
 import com.sharesafe.app.core.ImageRedactor
 import com.sharesafe.app.core.RedactRegion
@@ -90,6 +99,8 @@ import kotlin.math.sqrt
 
 private fun Offset.isFinite(): Boolean = x.isFinite() && y.isFinite()
 
+private val EMOJI_CHOICES = listOf("😊", "😎", "🤫", "🙈", "😴", "🐱", "🤖", "👤", "🚫", "⭐")
+
 private sealed interface GestureMode {
     data object Draw : GestureMode
     data object Transform : GestureMode
@@ -98,6 +109,7 @@ private sealed interface GestureMode {
     data class CropResize(val corner: Int) : GestureMode
     data object CropMove : GestureMode
     data object CropDraw : GestureMode
+    data object Freehand : GestureMode
     data object Idle : GestureMode
 }
 
@@ -121,6 +133,7 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
     val enabledCount = vm.regions.count { it.enabled }
     val selected = vm.regions.filter { it.id in vm.selectedIds }
     val kinds = vm.regions.map { it.kind }.distinct()
+    var showPresets by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
@@ -186,6 +199,13 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                     else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            IconButton(onClick = { vm.toggleMarkerMode() }, enabled = !cropEditing) {
+                Icon(
+                    Icons.Outlined.Gesture, stringResource(R.string.marker_toggle),
+                    tint = if (vm.markerMode) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             IconButton(onClick = { vm.toggleLivePreview(!vm.livePreview) }, enabled = !cropEditing) {
                 Icon(
                     if (vm.livePreview) Icons.Outlined.Visibility else Icons.Outlined.VisibilityOff,
@@ -203,6 +223,23 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                     )
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.menu_presets)) },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.Tune, null,
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        },
+                        onClick = { showPresets = true; menuOpen = false },
+                    )
+                    DropdownMenuItem(
+                        text = { Text(stringResource(R.string.menu_word_map)) },
+                        leadingIcon = {
+                            Icon(Icons.Outlined.GridOn, null,
+                                tint = if (vm.showWordMap) MaterialTheme.colorScheme.primary
+                                else MaterialTheme.colorScheme.onSurfaceVariant)
+                        },
+                        onClick = { vm.toggleWordMap(); menuOpen = false },
+                    )
                     DropdownMenuItem(
                         text = { Text(if (vm.cropEnabled) stringResource(R.string.menu_autocrop_on) else stringResource(R.string.menu_autocrop_off)) },
                         leadingIcon = {
@@ -271,6 +308,8 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
                     cropOriginX = if (cropEditing) 0 else crop.left,
                     cropOriginY = if (cropEditing) 0 else crop.top,
                     cropEdit = cropEditing,
+                    markerMode = vm.markerMode && !cropEditing,
+                    wordMap = vm.showWordMap && !cropEditing,
                 )
             }
         }
@@ -287,6 +326,10 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
             if (selected.isNotEmpty() && !cropEditing) {
                 SelectionBar(
                     selected = selected,
+                    similarTotal = vm.similarCount(selected.first().id),
+                    onSimilar = { vm.selectSimilar(selected.first().id) },
+                    lastEmoji = vm.lastEmoji,
+                    onEmoji = { vm.setEmojiFor(vm.selectedIds, it) },
                     defaultStyle = vm.defaultStyle,
                     defaultStrength = vm.defaultStrength,
                     onStyle = { vm.setStyleFor(vm.selectedIds, it) },
@@ -337,26 +380,29 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
 
             if (!cropEditing) {
                 Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    SingleChoiceSegmentedButtonRow(modifier = Modifier.weight(1f)) {
-                        RedactStyle.entries.forEachIndexed { i, style ->
-                            SegmentedButton(
+                    RedactStyle.entries.forEach { style ->
+                        FilterChip(
+                            selected = vm.defaultStyle == style,
+                            onClick = { vm.defaultStyle = style },
+                            label = { Text(style.label, fontSize = 12.sp) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                                labelColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                                selectedLabelColor = MaterialTheme.colorScheme.primary,
+                            ),
+                            border = FilterChipDefaults.filterChipBorder(
+                                enabled = true,
                                 selected = vm.defaultStyle == style,
-                                onClick = { vm.defaultStyle = style },
-                                shape = SegmentedButtonDefaults.itemShape(
-                                    index = i,
-                                    count = RedactStyle.entries.size,
-                                ),
-                                colors = SegmentedButtonDefaults.colors(
-                                    activeContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
-                                    activeContentColor = MaterialTheme.colorScheme.primary,
-                                ),
-                            ) {
-                                Text(style.label, fontSize = 12.sp)
-                            }
-                        }
+                                borderColor = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f),
+                                selectedBorderColor = MaterialTheme.colorScheme.primary,
+                            ),
+                        )
                     }
                 }
                 if (selected.isEmpty()) {
@@ -412,6 +458,65 @@ fun RedactScreen(vm: MainViewModel, onDone: () -> Unit, onClose: () -> Unit) {
     if (!vm.hintsSeen) {
         CoachMarkOverlay(onDismiss = vm::markHintsSeen)
     }
+
+    if (showPresets) {
+        PresetSheet(onPick = { vm.applyPreset(it); showPresets = false }, onDismiss = { showPresets = false })
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PresetSheet(onPick: (Preset) -> Unit, onDismiss: () -> Unit) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+            Text(
+                stringResource(R.string.presets_title),
+                fontWeight = FontWeight.Bold,
+                fontSize = 18.sp,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                stringResource(R.string.presets_subtitle),
+                fontSize = 12.5.sp,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(Modifier.height(14.dp))
+            Preset.entries.forEach { p ->
+                val (icon, titleRes, subRes) = when (p) {
+                    Preset.BANKING -> Triple(Icons.Outlined.Shield, R.string.preset_bank, R.string.preset_bank_sub)
+                    Preset.SOCIAL -> Triple(Icons.Outlined.Face, R.string.preset_social, R.string.preset_social_sub)
+                    Preset.WORK -> Triple(Icons.Outlined.DynamicFeed, R.string.preset_work, R.string.preset_work_sub)
+                }
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 4.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .clickable { onPick(p) }
+                        .padding(14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    Icon(icon, null, tint = Teal, modifier = Modifier.size(24.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            stringResource(titleRes),
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.5.sp,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            stringResource(subRes),
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(18.dp))
+        }
+    }
 }
 
 @Composable
@@ -458,6 +563,10 @@ private fun CoachMarkOverlay(onDismiss: () -> Unit) {
 @Composable
 private fun SelectionBar(
     selected: List<RedactRegion>,
+    similarTotal: Int,
+    onSimilar: () -> Unit,
+    lastEmoji: String,
+    onEmoji: (String) -> Unit,
     defaultStyle: RedactStyle,
     defaultStrength: Float,
     onStyle: (RedactStyle?) -> Unit,
@@ -485,31 +594,17 @@ private fun SelectionBar(
                 single?.kind?.label?.uppercase() ?: stringResource(R.string.selected_count, selected.size),
                 kindColor,
             )
-            Spacer(Modifier.width(2.dp))
-            RedactStyle.entries.forEach { style ->
-                val active = (single?.styleOverride ?: defaultStyle) == style
-                Box(
+            if (similarTotal > 1 && single != null) {
+                Text(
+                    stringResource(R.string.similar_badge, similarTotal),
+                    fontSize = 11.sp,
+                    color = Teal,
+                    fontWeight = FontWeight.SemiBold,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
-                        .background(
-                            if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
-                            else Color.Transparent
-                        )
-                        .clickable { onStyle(style) }
-                        .padding(horizontal = 8.dp, vertical = 5.dp),
-                ) {
-                    Text(
-                        when (style) {
-                            RedactStyle.BLUR -> "B"
-                            RedactStyle.PIXELATE -> "Px"
-                            RedactStyle.BLACK -> "■"
-                        },
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = if (active) MaterialTheme.colorScheme.primary
-                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
+                        .clickable(onClick = onSimilar)
+                        .padding(horizontal = 6.dp, vertical = 4.dp),
+                )
             }
             Spacer(Modifier.weight(1f))
             IconButton(onClick = onToggle, modifier = Modifier.size(34.dp)) {
@@ -540,6 +635,62 @@ private fun SelectionBar(
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(18.dp),
                 )
+            }
+        }
+        // Style chips — null override means "session default".
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(top = 4.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            RedactStyle.entries.forEach { style ->
+                val active = selected.all { (it.styleOverride ?: defaultStyle) == style }
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(
+                            if (active) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                            else Color.Transparent,
+                        )
+                        .clickable { onStyle(style) }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                ) {
+                    Text(
+                        style.label,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = if (active) MaterialTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+        // Emoji quick-pick when the effective style is EMOJI.
+        if (selected.any { (it.styleOverride ?: defaultStyle) == RedactStyle.EMOJI }) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(top = 6.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                EMOJI_CHOICES.forEach { emoji ->
+                    Text(
+                        emoji,
+                        fontSize = 20.sp,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(
+                                if (emoji == (single?.emoji ?: lastEmoji))
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+                                else Color.Transparent,
+                            )
+                            .clickable { onEmoji(emoji) }
+                            .padding(horizontal = 7.dp, vertical = 3.dp),
+                    )
+                }
             }
         }
         // For multi-selections show the shared override if uniform, else the
@@ -590,11 +741,14 @@ private fun RedactCanvas(
     cropOriginX: Int,
     cropOriginY: Int,
     cropEdit: Boolean,
+    markerMode: Boolean,
+    wordMap: Boolean,
 ) {
     var userScale by remember { mutableStateOf(1f) }
     var userPan by remember { mutableStateOf(Offset.Zero) }
     var dragRect by remember { mutableStateOf<Rect?>(null) }
     var cropDraft by remember { mutableStateOf<Rect?>(null) }
+    var strokeDraft by remember { mutableStateOf<FloatArray?>(null) }
     var canvasSize by remember { mutableStateOf(Size.Zero) }
 
     val imgW = bitmap.width.toFloat()
@@ -654,7 +808,7 @@ private fun RedactCanvas(
     Canvas(
         modifier = Modifier
             .fillMaxSize()
-            .pointerInput(bitmap, cropOriginX, cropOriginY, cropEdit) {
+            .pointerInput(bitmap, cropOriginX, cropOriginY, cropEdit, markerMode) {
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     var mode: GestureMode = GestureMode.Idle
@@ -666,10 +820,15 @@ private fun RedactCanvas(
                     var undoPushed = false
                     var gestureRegionStart: Rect? = null
                     var gestureCropStart: Rect? = null
+                    var strokePts: MutableList<Float>? = null
 
                     val downImg = toImage(down.position)
 
-                    if (cropEdit) {
+                    if (markerMode) {
+                        // Freehand marker — collect a polyline in full-image px.
+                        strokePts = mutableListOf(downImg.x + cropOriginX, downImg.y + cropOriginY)
+                        mode = GestureMode.Freehand
+                    } else if (cropEdit) {
                         val crop = vm.cropRect()
                         val s = totalScale()
                         val slopImg = 30f / s
@@ -911,6 +1070,24 @@ private fun RedactCanvas(
                                     kotlin.math.max(drawStart.y, curImg.y).roundToInt(),
                                 )
                             }
+                            GestureMode.Freehand -> {
+                                val p = event.changes.firstOrNull { it.id == down.id }
+                                    ?: event.changes.firstOrNull() ?: break
+                                val curImg = toImage(p.position)
+                                if (p.positionChange() != Offset.Zero) {
+                                    moved = true
+                                    val fx = curImg.x + cropOriginX
+                                    val fy = curImg.y + cropOriginY
+                                    val pts = strokePts
+                                    if (pts != null && pts.size >= 2 &&
+                                        (kotlin.math.abs(fx - pts[pts.size - 2]) +
+                                            kotlin.math.abs(fy - pts[pts.size - 1]) > 2f)
+                                    ) {
+                                        pts.add(fx); pts.add(fy)
+                                        strokeDraft = pts.toFloatArray()
+                                    }
+                                }
+                            }
                             GestureMode.Idle -> {}
                         }
 
@@ -945,6 +1122,14 @@ private fun RedactCanvas(
                                         vm.updateCropRect(d)
                                     }
                                     cropDraft = null
+                                }
+                                GestureMode.Freehand -> {
+                                    val pts = strokePts
+                                    if (pts != null && pts.size >= 6) {
+                                        vm.addStroke(pts.toFloatArray())
+                                    }
+                                    strokePts = null
+                                    strokeDraft = null
                                 }
                                 else -> {}
                             }
@@ -1030,22 +1215,32 @@ private fun RedactCanvas(
                         ),
                     )
                 } else {
-                    val fillAlpha = when (r.styleOverride ?: vm.defaultStyle) {
+                    val effStyle = r.styleOverride ?: vm.defaultStyle
+                    val fillAlpha = when (effStyle) {
                         RedactStyle.BLACK -> 0.82f
                         RedactStyle.BLUR -> 0.30f
                         RedactStyle.PIXELATE -> 0.34f
+                        RedactStyle.CLOAK -> 0.72f
+                        RedactStyle.EMOJI -> 0.60f
                     }
-                    val fillColor = if ((r.styleOverride ?: vm.defaultStyle) == RedactStyle.BLACK) {
-                        Color.Black.copy(alpha = fillAlpha)
-                    } else {
-                        color.copy(alpha = fillAlpha)
+                    val fillColor = when (effStyle) {
+                        RedactStyle.BLACK -> Color.Black.copy(alpha = fillAlpha)
+                        else -> color.copy(alpha = fillAlpha)
                     }
                     drawRect(color = fillColor, topLeft = tl, size = Size(br.x - tl.x, br.y - tl.y))
+                    val strokeStyle = if (r.isLowConfidence) {
+                        Stroke(
+                            width = if (isSelected) 2.5.dp.toPx() else 1.5.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(10f, 7f)),
+                        )
+                    } else {
+                        Stroke(width = if (isSelected) 2.5.dp.toPx() else 1.5.dp.toPx())
+                    }
                     drawRect(
                         color = color.copy(alpha = if (isSelected) 1f else 0.75f),
                         topLeft = tl,
                         size = Size(br.x - tl.x, br.y - tl.y),
-                        style = Stroke(width = if (isSelected) 2.5.dp.toPx() else 1.5.dp.toPx()),
+                        style = strokeStyle,
                     )
                     // kind badge
                     drawContext.canvas.nativeCanvas.apply {
@@ -1063,7 +1258,7 @@ private fun RedactCanvas(
                                 (color.blue * 255).toInt().coerceIn(0, 255),
                             )
                         }
-                        val badgeW = 20.dp.toPx()
+                        val badgeW = if (r.isLowConfidence) 30.dp.toPx() else 20.dp.toPx()
                         val badgeH = 16.dp.toPx()
                         drawRoundRect(
                             tl.x, tl.y - badgeH - 2,
@@ -1071,7 +1266,7 @@ private fun RedactCanvas(
                             5.dp.toPx(), 5.dp.toPx(), bgPaint,
                         )
                         drawText(
-                            r.kind.badge,
+                            if (r.isLowConfidence) r.kind.badge + "?" else r.kind.badge,
                             tl.x + badgeW / 2, tl.y - 6.dp.toPx(),
                             textPaint,
                         )
@@ -1085,6 +1280,44 @@ private fun RedactCanvas(
                         drawCircle(color, rad, c)
                     }
                 }
+            }
+
+            // Word-map overlay — faint boxes around every OCR'd word.
+            if (wordMap) {
+                vm.ocrWords.forEach { w ->
+                    val rel = Rect(w.bounds).apply { offset(-cropOriginX, -cropOriginY) }
+                    val tl = toCanvas(Offset(rel.left.toFloat(), rel.top.toFloat()))
+                    val br = toCanvas(Offset(rel.right.toFloat(), rel.bottom.toFloat()))
+                    drawRect(
+                        color = Color(0xFFFFD43B).copy(alpha = 0.35f),
+                        topLeft = tl,
+                        size = Size(br.x - tl.x, br.y - tl.y),
+                        style = Stroke(
+                            width = 0.8.dp.toPx(),
+                            pathEffect = PathEffect.dashPathEffect(floatArrayOf(4f, 4f)),
+                        ),
+                    )
+                }
+            }
+
+            // In-progress marker stroke.
+            strokeDraft?.let { pts ->
+                val path = androidx.compose.ui.graphics.Path()
+                var i = 0
+                while (i + 1 < pts.size) {
+                    val c = toCanvas(Offset(pts[i] - cropOriginX, pts[i + 1] - cropOriginY))
+                    if (i == 0) path.moveTo(c.x, c.y) else path.lineTo(c.x, c.y)
+                    i += 2
+                }
+                drawPath(
+                    path,
+                    color = Color(0xFFFFD43B),
+                    style = Stroke(
+                        width = 26f * s * vm.defaultStrength.coerceIn(0.5f, 4f),
+                        cap = StrokeCap.Round,
+                        join = StrokeJoin.Round,
+                    ),
+                )
             }
         }
 

@@ -3,7 +3,22 @@ package com.sharesafe.app.core
 import android.graphics.Rect
 import kotlin.math.ln
 
-data class SensitiveHit(val kind: RegionKind, val range: IntRange, val label: String)
+data class SensitiveHit(
+    val kind: RegionKind,
+    val range: IntRange,
+    val label: String,
+    val confidence: Float = 1f,
+    /** The exact matched substring — used for cloak text and apply-to-similar. */
+    val matched: String = "",
+)
+
+/** Joined OCR text + per-span char ranges — shared by regex pass and entity extraction. */
+class SpanIndex(val joined: String, val ranges: List<Pair<IntRange, OcrSpan>>) {
+    fun rectsFor(range: IntRange): List<Rect> =
+        ranges.filter { (r, _) -> range.overlaps(r) }.map { (_, s) -> s.bounds }
+
+    private fun IntRange.overlaps(o: IntRange): Boolean = first <= o.last && o.first <= last
+}
 
 /**
  * Maps sensitive-looking text onto OCR span bounds. Adapted from SnapCrop's
@@ -12,13 +27,7 @@ data class SensitiveHit(val kind: RegionKind, val range: IntRange, val label: St
  */
 object SensitiveTextDetector {
 
-    fun detectRegions(
-        spans: List<OcrSpan>,
-        imageWidth: Int,
-        imageHeight: Int,
-    ): List<RedactRegion> {
-        if (spans.isEmpty()) return emptyList()
-
+    fun buildIndex(spans: List<OcrSpan>): SpanIndex {
         val spanRanges = mutableListOf<Pair<IntRange, OcrSpan>>()
         val joined = buildString {
             spans.forEachIndexed { index, span ->
@@ -28,19 +37,40 @@ object SensitiveTextDetector {
                 if (index != spans.lastIndex) append(span.separatorAfter)
             }
         }
+        return SpanIndex(joined, spanRanges)
+    }
 
-        val hits = SensitivePatterns.match(joined)
+    fun detectRegions(
+        spans: List<OcrSpan>,
+        imageWidth: Int,
+        imageHeight: Int,
+        customRules: List<CustomRule> = emptyList(),
+    ): List<RedactRegion> {
+        if (spans.isEmpty()) return emptyList()
+        val index = buildIndex(spans)
+        val hits = SensitivePatterns.match(index.joined) +
+            SensitivePatterns.matchCustom(index.joined, customRules)
+        return regionsFromHits(index, hits, imageWidth, imageHeight)
+    }
+
+    /** Map hits to span bounds and merge — also used for entity-extraction hits. */
+    fun regionsFromHits(
+        index: SpanIndex,
+        hits: List<SensitiveHit>,
+        imageWidth: Int,
+        imageHeight: Int,
+    ): List<RedactRegion> {
         val regions = mutableListOf<RedactRegion>()
         hits.forEach { hit ->
-            spanRanges
-                .filter { (range, _) -> hit.range.overlaps(range) }
-                .forEach { (_, span) ->
-                    regions += RedactRegion.new(
-                        rect = span.bounds.padded(0.08f, 0.18f, imageWidth, imageHeight),
-                        kind = hit.kind,
-                        detail = hit.label,
-                    )
-                }
+            index.rectsFor(hit.range).forEach { bounds ->
+                regions += RedactRegion.new(
+                    rect = bounds.padded(0.08f, 0.18f, imageWidth, imageHeight),
+                    kind = hit.kind,
+                    detail = hit.label,
+                    confidence = hit.confidence,
+                    sourceText = hit.matched,
+                )
+            }
         }
         return mergeOverlapping(regions)
     }
@@ -51,8 +81,13 @@ object SensitiveTextDetector {
         regions.forEach { r ->
             val existing = out.indexOfFirst { it.kind == r.kind && it.rect.iou(r.rect) > 0.5f }
             if (existing >= 0) {
-                val merged = Rect(out[existing].rect).apply { union(r.rect) }
-                out[existing] = out[existing].copy(rect = merged)
+                val prev = out[existing]
+                val merged = Rect(prev.rect).apply { union(r.rect) }
+                out[existing] = prev.copy(
+                    rect = merged,
+                    confidence = minOf(prev.confidence, r.confidence),
+                    sourceText = prev.sourceText.ifEmpty { r.sourceText },
+                )
             } else {
                 out += r
             }
@@ -78,7 +113,10 @@ object SensitiveTextDetector {
                     val gap = maxOf(b.rect.left - a.rect.right, a.rect.left - b.rect.right)
                     val lineH = minOf(a.rect.height(), b.rect.height())
                     if (gap <= lineH * 1.5f) {
-                        out[i] = a.copy(rect = Rect(a.rect).apply { union(b.rect) })
+                        out[i] = a.copy(
+                            rect = Rect(a.rect).apply { union(b.rect) },
+                            confidence = minOf(a.confidence, b.confidence),
+                        )
                         out.removeAt(j)
                         merged = true
                         break@outer
@@ -115,17 +153,26 @@ object SensitivePatterns {
     private val patterns = listOf(
         P(RegionKind.EMAIL, Regex("[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}", RegexOption.IGNORE_CASE), "Email"),
         P(RegionKind.NETWORK, Regex("\\b(?:[0-9A-F]{2}[:-]){5}[0-9A-F]{2}\\b", RegexOption.IGNORE_CASE), "MAC address"),
-        P(RegionKind.CARD, Regex("\\b[A-Z]{2}\\d{2}(?:[ ]?[A-Z0-9]){11,30}\\b"), "IBAN"),
         P(RegionKind.SECRET, Regex("\\b(?:AKIA|ASIA)[A-Z0-9]{16}\\b"), "AWS key"),
         P(RegionKind.SECRET, Regex("\\bAIza[0-9A-Za-z_-]{35}\\b"), "API key"),
         P(RegionKind.SECRET, Regex("\\b(?:gh[pousr]_[A-Za-z0-9]{36,255}|github_pat_[A-Za-z0-9_]{22,255})\\b"), "GitHub token"),
         P(RegionKind.SECRET, Regex("\\b(?:xox[baprs]-[A-Za-z0-9-]{20,255}|sk_(?:live|test)_[A-Za-z0-9]{16,255})\\b"), "Token"),
+        // Additional well-known secret prefixes (ShotShield-style checksums where possible).
+        P(RegionKind.SECRET, Regex("\\bsk-[A-Za-z0-9]{20,255}\\b"), "API key"),
+        P(RegionKind.SECRET, Regex("\\b(?:pk|rk)_(?:live|test)_[A-Za-z0-9]{16,255}\\b"), "Key"),
+        P(RegionKind.SECRET, Regex("\\bxapp-[0-9A-Za-z-]{20,255}\\b"), "Token"),
+        P(RegionKind.SECRET, Regex("\\bdop_v1_[a-f0-9]{64}\\b"), "API token"),
+        P(RegionKind.SECRET, Regex("\\bEAAB[A-Za-z0-9]{20,255}\\b"), "Access token"),
+        P(RegionKind.SECRET, Regex("\\bSG\\.[A-Za-z0-9_-]{16,32}\\.[A-Za-z0-9_-]{16,64}\\b"), "API key"),
         P(
             RegionKind.SECRET,
             Regex("\\b(?:postgres(?:ql)?|mysql|mongodb(?:\\+srv)?|redis|amqps?)://[^\\s:/@]{1,64}:[^\\s@]{6,256}@", RegexOption.IGNORE_CASE),
             "DB credentials",
         ),
     )
+
+    // IBAN handled separately — mod-97 checksum gate (regex shape alone is too loose).
+    private val ibanCandidate = Regex("\\b[A-Z]{2}\\d{2}(?:[ ]?[A-Z0-9]){11,30}\\b")
 
     private val assignedSecret = Regex(
         "\\b(api[_ -]?key|access[_ -]?token|auth[_ -]?token|token|client[_ -]?secret|password|passwd|pwd|secret|pin)" +
@@ -178,20 +225,39 @@ object SensitivePatterns {
 
     private const val MAX_SCAN_LEN = 200_000
 
+    /**
+     * Keywords that raise a nearby match to high confidence — the value next to
+     * "password:" or "OTP" is almost surely sensitive even if the shape is weak.
+     */
+    private val contextBoosters = listOf(
+        "password", "passwd", "pwd", "pin", "otp", "kode", "verifikasi", "verification",
+        "token", "secret", "cvv", "cvc", "saldo", "balance", "rekening", "account",
+        "nik", "ktp", "npwp", "api key", "apikey", "ssn", "serial",
+    )
+    private const val CONTEXT_WINDOW = 48
+
     fun match(text: String): List<SensitiveHit> {
         if (text.length > MAX_SCAN_LEN) return emptyList()
         val hits = ArrayList<SensitiveHit>()
         patterns.forEach { p ->
-            p.regex.findAll(text).forEach { hits += SensitiveHit(p.kind, it.range, p.label) }
+            p.regex.findAll(text).forEach {
+                hits += SensitiveHit(p.kind, it.range, p.label, matched = it.value)
+            }
+        }
+        ibanCandidate.findAll(text).forEach { m ->
+            val normalized = m.value.replace(" ", "")
+            if (validIban(normalized)) {
+                hits += SensitiveHit(RegionKind.CARD, m.range, "IBAN", matched = m.value)
+            }
         }
         npwpShape.findAll(text).forEach { m ->
-            hits += SensitiveHit(RegionKind.NUMBER, m.range, "NPWP")
+            hits += SensitiveHit(RegionKind.NUMBER, m.range, "NPWP", matched = m.value)
         }
         contextPatterns.forEach { cp ->
             cp.regex.findAll(text).forEach { m ->
                 val g = m.groups[1] ?: return@forEach
                 if (hits.none { it.range.covers(g.range) }) {
-                    hits += SensitiveHit(cp.kind, g.range, cp.label)
+                    hits += SensitiveHit(cp.kind, g.range, cp.label, matched = g.value)
                 }
             }
         }
@@ -199,16 +265,16 @@ object SensitivePatterns {
             val key = m.groups[1]?.value.orEmpty()
             val value = m.groups[2]?.value.orEmpty()
             if (looksLikeAssignedSecret(key, value)) {
-                hits += SensitiveHit(RegionKind.SECRET, m.range, "Assigned secret")
+                hits += SensitiveHit(RegionKind.SECRET, m.range, "Assigned secret", matched = m.value)
             }
         }
         bearer.findAll(text).forEach { m ->
             if (looksLikeToken(m.groups[1]?.value.orEmpty())) {
-                hits += SensitiveHit(RegionKind.SECRET, m.range, "Bearer token")
+                hits += SensitiveHit(RegionKind.SECRET, m.range, "Bearer token", matched = m.value)
             }
         }
         jwt.findAll(text).forEach { m ->
-            hits += SensitiveHit(RegionKind.SECRET, m.range, "JWT")
+            hits += SensitiveHit(RegionKind.SECRET, m.range, "JWT", matched = m.value)
         }
         privateKeyBegin.findAll(text).forEach { begin ->
             val searchEnd = (begin.range.last + 1 + 8_192).coerceAtMost(text.length)
@@ -218,22 +284,23 @@ object SensitivePatterns {
                 RegionKind.SECRET,
                 if (end == null) begin.range else begin.range.first..end.range.last,
                 "Private key",
+                matched = begin.value,
             )
         }
         ipv4Candidate.findAll(text).forEach { m ->
             if (m.value.split('.').all { it.toIntOrNull() in 0..255 }) {
-                hits += SensitiveHit(RegionKind.NETWORK, m.range, "IPv4")
+                hits += SensitiveHit(RegionKind.NETWORK, m.range, "IPv4", matched = m.value)
             }
         }
         ipv6Candidate.findAll(text).forEach { m ->
             if (!macShape.matches(m.value)) {
-                hits += SensitiveHit(RegionKind.NETWORK, m.range, "IPv6")
+                hits += SensitiveHit(RegionKind.NETWORK, m.range, "IPv6", matched = m.value)
             }
         }
         cardCandidate.findAll(text).forEach { m ->
             val digits = m.value.filter(Char::isDigit)
             if (digits.length in 13..19 && passesLuhn(digits)) {
-                hits += SensitiveHit(RegionKind.CARD, m.range, "Payment card")
+                hits += SensitiveHit(RegionKind.CARD, m.range, "Payment card", matched = m.value)
             }
         }
         phoneCandidate.findAll(text).forEach { m ->
@@ -244,7 +311,9 @@ object SensitivePatterns {
             if (digits.length in 10..15 && hasPhoneSyntax && !isCard &&
                 !ipv4Candidate.matches(m.value)
             ) {
-                hits += SensitiveHit(RegionKind.PHONE, m.range, "Phone")
+                // A bare run without + or country hint is plausible but not certain.
+                val conf = if (m.value.startsWith('+')) 1f else 0.8f
+                hits += SensitiveHit(RegionKind.PHONE, m.range, "Phone", conf, matched = m.value)
             }
         }
         numberCandidate.findAll(text).forEach { m ->
@@ -253,12 +322,63 @@ object SensitivePatterns {
             if (digits.length in 8..19 && !alreadyCovered &&
                 !ipv4Candidate.matches(m.value.trim())
             ) {
-                // 16 digits with a valid province-prefix shape is very likely a NIK.
-                val label = if (digits.length == 16) "NIK / ID number" else "Number sequence"
-                hits += SensitiveHit(RegionKind.NUMBER, m.range, label)
+                // 16 digits with a valid province-prefix shape is very likely a NIK;
+                // a bare digit run with no label is a "maybe" the user should review.
+                val isNikShape = digits.length == 16
+                hits += SensitiveHit(
+                    RegionKind.NUMBER, m.range,
+                    if (isNikShape) "NIK / ID number" else "Number sequence",
+                    confidence = if (isNikShape) 0.85f else 0.55f,
+                    matched = m.value,
+                )
             }
         }
-        return hits.distinctBy { Triple(it.kind, it.range.first, it.range.last) }
+
+        // Context boost: a keyword near a weak match upgrades it to confident.
+        val lowered = text.lowercase()
+        return hits.map { h ->
+            if (h.confidence >= 1f) h else {
+                val from = (h.range.first - CONTEXT_WINDOW).coerceAtLeast(0)
+                val to = (h.range.last + 1 + CONTEXT_WINDOW).coerceAtMost(text.length)
+                val window = lowered.substring(from, to)
+                if (contextBoosters.any { it in window }) h.copy(confidence = 1f) else h
+            }
+        }.distinctBy { Triple(it.kind, it.range.first, it.range.last) }
+    }
+
+    /** User rules — every regex/wildcard hit becomes a CUSTOM region. */
+    fun matchCustom(text: String, rules: List<CustomRule>): List<SensitiveHit> {
+        if (text.length > MAX_SCAN_LEN || rules.isEmpty()) return emptyList()
+        val hits = ArrayList<SensitiveHit>()
+        rules.forEach { rule ->
+            val re = rule.toRegex() ?: return@forEach
+            re.findAll(text).forEach { m ->
+                if (m.value.isNotBlank()) {
+                    hits += SensitiveHit(
+                        RegionKind.CUSTOM, m.range, rule.label,
+                        confidence = 0.9f, matched = m.value,
+                    )
+                }
+            }
+        }
+        return hits
+    }
+
+    /** ISO 13616 mod-97 check. */
+    fun validIban(iban: String): Boolean {
+        if (iban.length !in 15..34) return false
+        var remainder = 0
+        (iban.substring(4) + iban.substring(0, 4)).forEach { ch ->
+            val code = when {
+                ch.isDigit() -> ch - '0'
+                ch.isLetter() -> ch.uppercaseChar() - 'A' + 10
+                else -> return false
+            }
+            // Two-digit letters produce two chars worth of digits — fold them in.
+            val digits = code.toString()
+            digits.forEach { d -> remainder = (remainder * 10 + (d - '0')) % 97 }
+        }
+        return remainder == 1
     }
 
     private fun IntRange.covers(o: IntRange): Boolean = first <= o.first && last >= o.last

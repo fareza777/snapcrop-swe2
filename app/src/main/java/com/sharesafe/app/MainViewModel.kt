@@ -16,6 +16,8 @@ import com.sharesafe.app.core.AutoCrop
 import com.sharesafe.app.core.Beautifier
 import com.sharesafe.app.core.BeautifyOptions
 import com.sharesafe.app.core.CodeScanner
+import com.sharesafe.app.core.CustomRule
+import com.sharesafe.app.core.EntityExtractor
 import com.sharesafe.app.core.ExportFormat
 import com.sharesafe.app.core.Exporter
 import com.sharesafe.app.core.FaceDetector
@@ -26,6 +28,8 @@ import com.sharesafe.app.core.Prefs
 import com.sharesafe.app.core.RedactRegion
 import com.sharesafe.app.core.RedactStyle
 import com.sharesafe.app.core.RegionKind
+import com.sharesafe.app.core.ScreenshotWatcher
+import com.sharesafe.app.core.SensitivePatterns
 import com.sharesafe.app.core.SensitiveTextDetector
 import com.sharesafe.app.core.SystemBars
 import com.sharesafe.app.core.TextExtractor
@@ -43,7 +47,14 @@ import kotlin.math.min
 
 enum class Screen { HOME, SCANNING, EDITOR, EXPORT }
 
-enum class ScanPhase { LOADING, OCR, FACES, CODES, DONE }
+enum class ScanPhase { LOADING, OCR, ENTITIES, FACES, CODES, DONE }
+
+/** One-tap redaction profiles — kind → style maps applied across all regions. */
+enum class Preset {
+    BANKING, SOCIAL, WORK
+}
+
+private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -83,6 +94,25 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var hintsSeen by mutableStateOf(Prefs.hintsSeen(app))
         private set
     var exportFormat by mutableStateOf(ExportFormat.PNG)
+    var customRules by mutableStateOf(Prefs.customRules(app))
+        private set
+    var watchScreenshots by mutableStateOf(Prefs.watchScreenshots(app))
+        private set
+
+    /** Newest unseen screenshot found by the watcher — shown on Home. */
+    var pendingScreenshot by mutableStateOf<Uri?>(null)
+        private set
+
+    /** Overlay toggle: draw faint boxes around every detected OCR word. */
+    var showWordMap by mutableStateOf(false)
+
+    /** Freehand marker pen mode — strokes become opaque covers. */
+    var markerMode by mutableStateOf(false)
+        private set
+
+    /** Emoji applied to new EMOJI-styled regions. */
+    var lastEmoji by mutableStateOf(Prefs.lastEmoji(app))
+        private set
 
     // ---- batch queue ----
     var queue by mutableStateOf<List<Uri>>(emptyList())
@@ -171,6 +201,59 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun markHintsSeen() {
         hintsSeen = true
         Prefs.markHintsSeen(getApplication())
+    }
+
+    fun updateCustomRules(rules: List<CustomRule>) {
+        customRules = rules
+        Prefs.setCustomRules(getApplication(), rules)
+    }
+
+    fun updateWatchScreenshots(on: Boolean) {
+        watchScreenshots = on
+        Prefs.setWatchScreenshots(getApplication(), on)
+    }
+
+    fun updateLastEmoji(emoji: String) {
+        lastEmoji = emoji
+        Prefs.setLastEmoji(getApplication(), emoji)
+    }
+
+    fun toggleMarkerMode() {
+        markerMode = !markerMode
+        if (markerMode) cropEditMode = false
+    }
+
+    fun toggleWordMap() { showWordMap = !showWordMap }
+
+    /** Check MediaStore for a screenshot newer than the last surfaced one. */
+    fun checkNewScreenshot() {
+        if (!watchScreenshots) return
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            val found = runCatching {
+                ScreenshotWatcher.latestSince(app, Prefs.lastShotSeen(app))
+            }.getOrNull() ?: return@launch
+            // Surface once — record its timestamp so it won't nag again.
+            Prefs.setLastShotSeen(app, found.second)
+            pendingScreenshot = found.first
+        }
+    }
+
+    fun openPendingScreenshot() {
+        val uri = pendingScreenshot ?: return
+        pendingScreenshot = null
+        queue = listOf(uri)
+        queuePos = 0
+        loadImage(uri)
+    }
+
+    fun dismissPendingScreenshot() {
+        pendingScreenshot = null
+        // Mark "now" so the same shot isn't surfaced again.
+        Prefs.setLastShotSeen(
+            getApplication(),
+            System.currentTimeMillis() / 1000L,
+        )
     }
 
     fun resumeSavedQueue() {
@@ -304,12 +387,13 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         var progressDone = 0
         fun bump() {
             progressDone++
-            scanProgress = 0.15f + 0.8f * progressDone / 3f
+            scanProgress = 0.15f + 0.8f * progressDone / 4f
         }
 
-        // OCR / faces / codes run concurrently; each failure is recorded so the
+        // OCR / faces / codes run concurrently; entity extraction follows OCR
+        // since it annotates the joined text. Each failure is recorded so the
         // editor can offer a retry instead of silently showing zero findings.
-        val (spans, faceRects, codes) = coroutineScope {
+        val (spans, faceRects, codes, entityHits) = coroutineScope {
             val textD = async(Dispatchers.Default) {
                 try {
                     TextExtractor.extractSpans(detWork)
@@ -333,17 +417,34 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     failed += ScanPhase.CODES; emptyList()
                 }
             }
-            // Progress is coarse — phases finish roughly together when parallel.
             val t = textD.await().also { scanPhase = ScanPhase.OCR; bump() }
+            val entityD = async(Dispatchers.Default) {
+                try {
+                    if (t.isEmpty()) emptyList()
+                    else EntityExtractor.detect(SensitiveTextDetector.buildIndex(t).joined)
+                } catch (e: Exception) {
+                    failed += ScanPhase.ENTITIES; emptyList()
+                }
+            }
             val f = faceD.await().also { scanPhase = ScanPhase.FACES; bump() }
             val c = codeD.await().also { scanPhase = ScanPhase.CODES; bump() }
-            Triple(t, f, c)
+            val e = entityD.await().also { scanPhase = ScanPhase.ENTITIES; bump() }
+            Quad(t, f, c, e)
         }
         failedPhases = failed
 
-        val textRegions = SensitiveTextDetector.detectRegions(
-            spans, detWork.width, detWork.height,
+        val spanIndex = SensitiveTextDetector.buildIndex(spans)
+        val regexRegions = SensitiveTextDetector.regionsFromHits(
+            spanIndex,
+            SensitivePatterns.match(spanIndex.joined) +
+                SensitivePatterns.matchCustom(spanIndex.joined, customRules),
+            detWork.width, detWork.height,
         )
+        // Entity extraction is assistive: drop hits that overlap regex regions.
+        val entityRegions = SensitiveTextDetector.regionsFromHits(
+            spanIndex, entityHits, detWork.width, detWork.height,
+        ).filter { e -> regexRegions.none { Rect.intersects(e.rect, it.rect) } }
+        val textRegions = regexRegions + entityRegions
 
         val faceRegions = faceRects.map {
             RedactRegion.new(it, RegionKind.FACE, detail = "Face")
@@ -546,6 +647,97 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refreshPreview()
     }
 
+    /** One-tap profile: kind → style/strength, applied to every current region. */
+    fun applyPreset(preset: Preset) {
+        pushUndo()
+        val styles: Map<RegionKind, RedactStyle> = when (preset) {
+            Preset.BANKING -> mapOf(
+                RegionKind.CARD to RedactStyle.BLACK,
+                RegionKind.NUMBER to RedactStyle.BLACK,
+                RegionKind.SECRET to RedactStyle.BLACK,
+                RegionKind.EMAIL to RedactStyle.PIXELATE,
+                RegionKind.PHONE to RedactStyle.PIXELATE,
+                RegionKind.NETWORK to RedactStyle.PIXELATE,
+                RegionKind.TRACKING to RedactStyle.BLACK,
+            )
+            Preset.SOCIAL -> mapOf(
+                RegionKind.FACE to RedactStyle.EMOJI,
+                RegionKind.EMAIL to RedactStyle.BLACK,
+                RegionKind.PHONE to RedactStyle.BLACK,
+                RegionKind.ADDRESS to RedactStyle.BLACK,
+                RegionKind.NUMBER to RedactStyle.PIXELATE,
+                RegionKind.DATETIME to RedactStyle.PIXELATE,
+            )
+            Preset.WORK -> mapOf(
+                RegionKind.SECRET to RedactStyle.BLACK,
+                RegionKind.CARD to RedactStyle.BLACK,
+                RegionKind.EMAIL to RedactStyle.PIXELATE,
+                RegionKind.PHONE to RedactStyle.PIXELATE,
+                RegionKind.NETWORK to RedactStyle.BLUR,
+            )
+        }
+        regions = regions.map { r ->
+            val s = styles[r.kind]
+            if (s != null) {
+                r.copy(
+                    styleOverride = s,
+                    emoji = if (s == RedactStyle.EMOJI && r.emoji.isEmpty()) lastEmoji else r.emoji,
+                )
+            } else r
+        }
+        refreshPreview()
+    }
+
+    /** Select every region carrying the same detected text as the selected one. */
+    fun selectSimilar(anchorId: String) {
+        val anchor = regions.firstOrNull { it.id == anchorId } ?: return
+        val needle = anchor.sourceText.trim().lowercase()
+        if (needle.isEmpty()) return
+        val matches = regions.filter {
+            it.sourceText.trim().lowercase() == needle
+        }.map { it.id }.toSet()
+        if (matches.size > 1) selectedIds = matches
+    }
+
+    fun similarCount(id: String): Int {
+        val anchor = regions.firstOrNull { it.id == id } ?: return 0
+        val needle = anchor.sourceText.trim().lowercase()
+        if (needle.isEmpty()) return 0
+        return regions.count { it.sourceText.trim().lowercase() == needle }
+    }
+
+    fun setEmojiFor(ids: Set<String>, emoji: String) {
+        pushUndo()
+        regions = regions.map { if (it.id in ids) it.copy(emoji = emoji) else it }
+        updateLastEmoji(emoji)
+        refreshPreview()
+    }
+
+    /** Freehand stroke → opaque marker region covering the drawn path. */
+    fun addStroke(points: FloatArray) {
+        val src = source ?: return
+        if (points.size < 4) return
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
+        var maxX = 0f; var maxY = 0f
+        var i = 0
+        while (i + 1 < points.size) {
+            minX = min(minX, points[i]); maxX = max(maxX, points[i])
+            minY = min(minY, points[i + 1]); maxY = max(maxY, points[i + 1])
+            i += 2
+        }
+        val pad = 30f
+        val bounds = Rect(
+            (minX - pad).toInt(), (minY - pad).toInt(),
+            (maxX + pad).toInt(), (maxY + pad).toInt(),
+        ).clampTo(src.width, src.height) ?: return
+        pushUndo()
+        val region = RedactRegion.new(bounds, RegionKind.MANUAL, detail = "Marker")
+            .copy(strokePoints = points)
+        regions = regions + region
+        selectedIds = setOf(region.id)
+        refreshPreview()
+    }
+
     fun addRegion(rect: Rect, kind: RegionKind = RegionKind.MANUAL, detail: String = "") {
         val src = source ?: return
         val clamped = rect.clampTo(src.width, src.height) ?: return
@@ -626,6 +818,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- rendering ----
 
+    /** Shift a region's rect AND freehand stroke points by (dx, dy). */
+    private fun shiftRegion(r: RedactRegion, dx: Int, dy: Int): RedactRegion {
+        val pts = r.strokePoints ?: return r.copy(
+            rect = Rect(r.rect).apply { offset(dx, dy) },
+        )
+        val shifted = FloatArray(pts.size) { i ->
+            pts[i] + if (i % 2 == 0) dx.toFloat() else dy.toFloat()
+        }
+        return r.copy(
+            rect = Rect(r.rect).apply { offset(dx, dy) },
+            strokePoints = shifted,
+        )
+    }
+
     /** Redacted bitmap in crop space, regions translated. */
     fun renderRedacted(): Bitmap? {
         val src = source ?: return null
@@ -634,9 +840,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val crop = cropRect().clampTo(src.width, src.height)
             ?: Rect(0, 0, src.width, src.height)
         val cropped = Bitmap.createBitmap(src, crop.left, crop.top, crop.width(), crop.height())
-        val shifted = regions.map {
-            it.copy(rect = Rect(it.rect).apply { offset(-crop.left, -crop.top) })
-        }
+        val shifted = regions.map { shiftRegion(it, -crop.left, -crop.top) }
         return ImageRedactor.render(cropped, shifted, defaultStyle, defaultStrength)
     }
 
@@ -657,20 +861,37 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val work = Bitmap.createScaledBitmap(cropped, pw, ph, true)
         cropped.recycle()
         val shifted = regions.map { r ->
-            r.copy(
-                rect = Rect(
-                    ((r.rect.left - crop.left) * scale).toInt(),
-                    ((r.rect.top - crop.top) * scale).toInt(),
-                    ((r.rect.right - crop.left) * scale).toInt(),
-                    ((r.rect.bottom - crop.top) * scale).toInt(),
-                ),
-            )
+            shiftRegion(
+                r, -crop.left, -crop.top,
+            ).let { sh ->
+                sh.copy(
+                    rect = Rect(
+                        (sh.rect.left * scale).toInt(),
+                        (sh.rect.top * scale).toInt(),
+                        (sh.rect.right * scale).toInt(),
+                        (sh.rect.bottom * scale).toInt(),
+                    ),
+                    strokePoints = sh.strokePoints?.let { p ->
+                        FloatArray(p.size) { p[it] * scale }
+                    },
+                )
+            }
         }
         val small = ImageRedactor.render(work, shifted, defaultStyle, defaultStrength)
         if (small !== work) work.recycle()
         val full = Bitmap.createScaledBitmap(small, crop.width(), crop.height(), true)
         if (full !== small) small.recycle()
         return full
+    }
+
+    /** Un-redacted crop for the hold-to-compare peek on the export screen. */
+    fun renderOriginal(): Bitmap? {
+        val src = source ?: return null
+        val crop = cropRect().clampTo(src.width, src.height)
+            ?: Rect(0, 0, src.width, src.height)
+        val cropped = Bitmap.createBitmap(src, crop.left, crop.top, crop.width(), crop.height())
+        return runCatching { Beautifier.render(cropped, beautify) }
+            .getOrElse { cropped }
     }
 
     /**
@@ -800,6 +1021,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         selectedIds = emptySet()
         detectedCrop = null
         cropEditMode = false
+        markerMode = false
+        showWordMap = false
         renderedPreview = null
         renderedFinal = null
         exportSaved = false

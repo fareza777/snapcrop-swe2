@@ -9,6 +9,7 @@ material3 = "1.4.0"
 mlkitTextRecognition = "16.0.1"
 mlkitFaceDetection = "16.1.7"
 mlkitBarcodeScanning = "17.3.0"
+mlkitEntityExtraction = "16.0.0-beta6"
 exifinterface = "1.4.1"
 junit = "4.13.2"
 robolectric = "4.16.1"
@@ -29,6 +30,7 @@ androidx-material-icons = { group = "androidx.compose.material", name = "materia
 mlkit-textrecognition = { group = "com.google.mlkit", name = "text-recognition", version.ref = "mlkitTextRecognition" }
 mlkit-facedetection = { group = "com.google.mlkit", name = "face-detection", version.ref = "mlkitFaceDetection" }
 mlkit-barcodescanning = { group = "com.google.mlkit", name = "barcode-scanning", version.ref = "mlkitBarcodeScanning" }
+mlkit-entityextraction = { group = "com.google.mlkit", name = "entity-extraction", version.ref = "mlkitEntityExtraction" }
 androidx-exifinterface = { group = "androidx.exifinterface", name = "exifinterface", version.ref = "exifinterface" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }

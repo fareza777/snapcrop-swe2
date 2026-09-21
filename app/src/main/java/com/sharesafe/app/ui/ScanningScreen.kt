@@ -116,6 +116,7 @@ fun ScanningScreen(
                     when (phase) {
                         ScanPhase.LOADING -> stringResource(R.string.scanning_loading)
                         ScanPhase.OCR -> stringResource(R.string.scanning_ocr)
+                        ScanPhase.ENTITIES -> stringResource(R.string.scanning_entities)
                         ScanPhase.FACES -> stringResource(R.string.scanning_faces)
                         ScanPhase.CODES -> stringResource(R.string.scanning_codes)
                         ScanPhase.DONE -> stringResource(R.string.scanning_done)
