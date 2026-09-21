@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ShareSafe</string>
+
+    <string name="home_tagline">Bagikan screenshot tanpa membocorkan\nisinya.</string>
+    <string name="home_pick">Pilih screenshot</string>
+    <string name="home_pick_hint">pilih sampai 9, atau share gambar langsung ke ShareSafe</string>
+    <string name="home_private">100% di perangkat. Tanpa upload, tanpa akun.</string>
+    <string name="home_error_open">Gambar tidak bisa dibuka.</string>
+    <string name="resume_batch">Lanjutkan batch</string>
+    <string name="resume_batch_sub">%1$d gambar tersisa di antrian</string>
+    <string name="resume_batch_one">1 gambar tersisa di antrian</string>
+    <string name="dismiss">Tutup</string>
+    <string name="chip_ocr">OCR\ndeteksi</string>
+    <string name="chip_face">Blur\nwajah</string>
+    <string name="chip_qr">Sensor\nQR</string>
+    <string name="chip_crop">Crop\nbar</string>
+    <string name="chip_beautify">Beautify\n</string>
+
+    <string name="settings">Pengaturan</string>
+    <string name="settings_always_redact">Selalu sensor</string>
+    <string name="settings_always_redact_sub">Nama, email, atau nomor HP kamu — tiap screenshot dipindai untuk ini.</string>
+    <string name="settings_add_word">Tambah kata atau frasa</string>
+    <string name="add">Tambah</string>
+    <string name="remove">Hapus</string>
+    <string name="settings_batch">Batch</string>
+    <string name="settings_apply_all">Terapkan ke semua</string>
+    <string name="settings_apply_all_sub">Bawa kategori nonaktif &amp; beautify ke tiap gambar di antrian</string>
+    <string name="settings_appearance">Tampilan</string>
+    <string name="settings_dynamic_color">Warna dinamis</string>
+    <string name="settings_dynamic_color_sub">Material You — ikuti palet sistem</string>
+
+    <string name="scanning_title">Memindai screenshot</string>
+    <string name="scanning_loading">Memuat gambar…</string>
+    <string name="scanning_ocr">Membaca teks (OCR di perangkat)…</string>
+    <string name="scanning_entities">Mengekstrak entitas…</string>
+    <string name="scanning_faces">Mendeteksi wajah…</string>
+    <string name="scanning_codes">Memindai QR &amp; barcode…</string>
+    <string name="scanning_done">Selesai</string>
+    <string name="scanning_stage_text">Teks</string>
+    <string name="scanning_stage_faces">Wajah</string>
+    <string name="scanning_stage_codes">Kode</string>
+    <string name="cancel">Batal</string>
+    <string name="thumbnail_cd">Screenshot yang sedang dipindai</string>
+
+    <string name="editor_title">Sensor</string>
+    <string name="editor_crop_title">Crop</string>
+    <string name="editor_crop_subtitle">Seret sudut untuk menyesuaikan</string>
+    <string name="editor_areas_one">1 area terlindungi</string>
+    <string name="editor_areas_many">%1$d area terlindungi</string>
+    <string name="editor_image_pos">Gambar %1$d/%2$d</string>
+    <string name="back">Kembali</string>
+    <string name="undo">Urungkan</string>
+    <string name="redo">Ulangi</string>
+    <string name="select_all">Pilih semua</string>
+    <string name="preview_toggle">Pratinjau</string>
+    <string name="more">Lainnya</string>
+    <string name="menu_autocrop_on">Auto-crop: aktif</string>
+    <string name="menu_autocrop_off">Auto-crop: mati</string>
+    <string name="menu_edit_crop">Edit area crop</string>
+    <string name="menu_done_crop">Selesai crop</string>
+    <string name="menu_rescan">Ulangi deteksi</string>
+    <string name="scan_failed">Sebagian pemindaian gagal — ketuk untuk coba lagi</string>
+    <string name="effect">Efek</string>
+    <string name="editor_hint">Seret area kosong untuk menutup lebih banyak. Ketuk kata terdeteksi untuk menyensornya, ketuk area untuk edit, tahan untuk multi-select.</string>
+    <string name="editor_crop_hint">Crop: seret sudut untuk ubah, seret di dalam untuk geser, seret di luar untuk gambar ulang.</string>
+    <string name="editor_done">Pratinjau &amp; Bagikan  →</string>
+
+    <string name="coach_title">Gestur cepat</string>
+    <string name="coach_tap">Ketuk area bergaris untuk memilih; ketuk kata terdeteksi untuk menyensor</string>
+    <string name="coach_longpress">Tahan untuk menambah area ke seleksi</string>
+    <string name="coach_move">Seret di dalam area terpilih untuk geser; seret sudutnya untuk ubah ukuran</string>
+    <string name="coach_zoom">Cubit dua jari untuk zoom; seret area kosong untuk menutup baru</string>
+    <string name="coach_gotit">Mengerti</string>
+
+    <string name="selected_count">%1$d TERPILIH</string>
+    <string name="toggle">alihkan</string>
+    <string name="duplicate">duplikat</string>
+    <string name="delete">hapus</string>
+    <string name="deselect">batal pilih</string>
+
+    <string name="export_title">Pratinjau</string>
+    <string name="export_subtitle">Sensor bersifat permanen di hasil export</string>
+    <string name="rendering">Merender…</string>
+    <string name="redacted_preview_cd">Pratinjau hasil sensor</string>
+    <string name="format">Format</string>
+    <string name="beautify">Beautify</string>
+    <string name="padding">Padding</string>
+    <string name="corners">Sudut</string>
+    <string name="shadow">Bayangan</string>
+    <string name="safe_share">Share Aman</string>
+    <string name="preparing">Menyiapkan…</string>
+    <string name="save_gallery">Simpan ke galeri</string>
+    <string name="saving">Menyimpan…</string>
+    <string name="saved">Tersimpan</string>
+    <string name="next">Lanjut →</string>
+    <string name="done">Selesai</string>
+    <string name="share_chooser">Bagikan gambar tersensor</string>
+    <string name="verified_clean">Terverifikasi — tidak ada kode yang masih terbaca</string>
+    <string name="apply_all_note">Beautify &amp; kategori terbawa ke %1$d gambar berikutnya — ubah di Pengaturan.</string>
+    <string name="editor_sel_hint">Ketuk kotak lain untuk pindah pilihan • tahan untuk multi-pilih</string>
+    <string name="save_failed">Gagal menyimpan</string>
+    <string name="render_failed">Gagal merender preview — coba lagi</string>
+    <string name="verify_notice">%1$d kode masih terbaca — ditingkatkan ke blackout</string>
+    <string name="verify_exposed">%1$d kode masih dapat dibaca (region nonaktif atau tak tercakup)</string>
+
+    <!-- v1.2 -->
+    <string name="marker_toggle">Pena marker</string>
+    <string name="menu_presets">Preset sensor</string>
+    <string name="menu_word_map">Peta kata</string>
+    <string name="presets_title">Preset sensor</string>
+    <string name="presets_subtitle">Terapkan satu profil ke semua area terdeteksi</string>
+    <string name="preset_bank">Perbankan</string>
+    <string name="preset_bank_sub">Kartu, NIK &amp; angka jadi blackout; kontak pixelate</string>
+    <string name="preset_social">Media sosial</string>
+    <string name="preset_social_sub">Wajah ditutup emoji; kontak &amp; angka blackout</string>
+    <string name="preset_work">Pekerjaan</string>
+    <string name="preset_work_sub">Kunci &amp; kartu blackout; email, telepon pixelate</string>
+    <string name="similar_badge">Sama ×%1$d</string>
+    <string name="settings_rules">Aturan kustom</string>
+    <string name="settings_rules_sub">Detektor buatanmu — regex, atau wildcard: # digit, ? huruf/digit, * bebas. Contoh: EMP-####</string>
+    <string name="rule_label_ph">Label, mis. ID Karyawan</string>
+    <string name="rule_pattern_ph">Pola, mis. EMP-#### atau ID-\\d+</string>
+    <string name="rule_invalid">Pola tidak valid — periksa sintaksnya</string>
+    <string name="settings_watch">Pengawas screenshot</string>
+    <string name="settings_watch_shots">Cek screenshot baru</string>
+    <string name="settings_watch_shots_sub">Saat dibuka, tawarkan sensor screenshot terbaru. Perlu izin baca gambar.</string>
+    <string name="new_shot_title">Screenshot baru ditemukan</string>
+    <string name="new_shot_sub">Ketuk untuk sensor sekarang</string>
+    <string name="hold_peek">Tahan untuk intip</string>
+    <string name="peeking_original">ASLI</string>
+    <string name="metadata_clean">Metadata bersih — tanpa EXIF, nama file acak</string>
+    <string name="share_whatsapp">Bagikan ke WhatsApp</string>
+</resources>

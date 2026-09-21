@@ -9,6 +9,7 @@ import com.google.mlkit.vision.face.FaceDetection
 import com.google.mlkit.vision.face.FaceDetectorOptions
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 
 object FaceDetector {
 
@@ -36,7 +37,7 @@ object FaceDetector {
                         )
                     }
                 }
-                .addOnFailureListener { if (cont.isActive) cont.resume(emptyList()) }
+                .addOnFailureListener { e -> if (cont.isActive) cont.resumeWithException(e) }
         }
     }
 }
@@ -66,7 +67,7 @@ object CodeScanner {
                         )
                     }
                 }
-                .addOnFailureListener { if (cont.isActive) cont.resume(emptyList()) }
+                .addOnFailureListener { e -> if (cont.isActive) cont.resumeWithException(e) }
         }
     }
 }

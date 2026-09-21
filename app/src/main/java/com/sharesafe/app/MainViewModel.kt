@@ -1,6 +1,7 @@
 package com.sharesafe.app
 
 import android.app.Application
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.net.Uri
@@ -15,25 +16,45 @@ import com.sharesafe.app.core.AutoCrop
 import com.sharesafe.app.core.Beautifier
 import com.sharesafe.app.core.BeautifyOptions
 import com.sharesafe.app.core.CodeScanner
+import com.sharesafe.app.core.CustomRule
+import com.sharesafe.app.core.EntityExtractor
+import com.sharesafe.app.core.ExportFormat
 import com.sharesafe.app.core.Exporter
 import com.sharesafe.app.core.FaceDetector
 import com.sharesafe.app.core.ImageLoader
 import com.sharesafe.app.core.ImageRedactor
+import com.sharesafe.app.core.OcrSpan
+import com.sharesafe.app.core.Prefs
 import com.sharesafe.app.core.RedactRegion
 import com.sharesafe.app.core.RedactStyle
 import com.sharesafe.app.core.RegionKind
+import com.sharesafe.app.core.ScreenshotWatcher
+import com.sharesafe.app.core.SensitivePatterns
 import com.sharesafe.app.core.SensitiveTextDetector
 import com.sharesafe.app.core.SystemBars
 import com.sharesafe.app.core.TextExtractor
 import com.sharesafe.app.core.clampTo
+import com.sharesafe.app.core.padded
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlin.math.max
+import kotlin.math.min
 
 enum class Screen { HOME, SCANNING, EDITOR, EXPORT }
 
-enum class ScanPhase { LOADING, OCR, FACES, CODES, DONE }
+enum class ScanPhase { LOADING, OCR, ENTITIES, FACES, CODES, DONE }
+
+/** One-tap redaction profiles — kind → style maps applied across all regions. */
+enum class Preset {
+    BANKING, SOCIAL, WORK
+}
+
+private data class Quad<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
@@ -42,11 +63,56 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     var source by mutableStateOf<Bitmap?>(null)
         private set
+    private var sourceUri: Uri? = null
 
     var errorMessage by mutableStateOf<String?>(null)
     var scanPhase by mutableStateOf(ScanPhase.LOADING)
     var detectFaces by mutableStateOf(true)
     var detectCodes by mutableStateOf(true)
+
+    /** Detection stages that failed — distinct from "found nothing". */
+    var failedPhases by mutableStateOf<Set<ScanPhase>>(emptySet())
+        private set
+    var scanProgress by mutableFloatStateOf(0f)
+        private set
+
+    /** OCR words in full-image coords — powers tap-to-redact. */
+    var ocrWords by mutableStateOf<List<OcrSpan>>(emptyList())
+        private set
+
+    /** Notice shown on export when post-render verification changed regions. */
+    var verifyNotice by mutableStateOf<String?>(null)
+        private set
+
+    // ---- settings (persisted) ----
+    var blacklist by mutableStateOf(Prefs.blacklist(app))
+        private set
+    var dynamicColor by mutableStateOf(Prefs.dynamicColor(app))
+        private set
+    var applyToAll by mutableStateOf(Prefs.applyToAll(app))
+        private set
+    var hintsSeen by mutableStateOf(Prefs.hintsSeen(app))
+        private set
+    var exportFormat by mutableStateOf(ExportFormat.PNG)
+    var customRules by mutableStateOf(Prefs.customRules(app))
+        private set
+    var watchScreenshots by mutableStateOf(Prefs.watchScreenshots(app))
+        private set
+
+    /** Newest unseen screenshot found by the watcher — shown on Home. */
+    var pendingScreenshot by mutableStateOf<Uri?>(null)
+        private set
+
+    /** Overlay toggle: draw faint boxes around every detected OCR word. */
+    var showWordMap by mutableStateOf(false)
+
+    /** Freehand marker pen mode — strokes become opaque covers. */
+    var markerMode by mutableStateOf(false)
+        private set
+
+    /** Emoji applied to new EMOJI-styled regions. */
+    var lastEmoji by mutableStateOf(Prefs.lastEmoji(app))
+        private set
 
     // ---- batch queue ----
     var queue by mutableStateOf<List<Uri>>(emptyList())
@@ -55,6 +121,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         private set
     val hasNextInQueue get() = queuePos < queue.size - 1
     val queueSize get() = queue.size
+
+    /** A queue persisted earlier whose URIs may still be readable. */
+    var resumableQueue by mutableStateOf<Pair<List<Uri>, Int>?>(Prefs.savedQueue(app))
+        private set
 
     // ---- crop ----
     var detectedCrop by mutableStateOf<AutoCrop.CropResult?>(null)
@@ -90,6 +160,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var renderedPreview by mutableStateOf<Bitmap?>(null)
         private set
 
+    private companion object {
+        const val PREVIEW_MAX_DIM = 1400
+    }
+
     private var finalRenderJob: Job? = null
     var renderedFinal by mutableStateOf<Bitmap?>(null)
         private set
@@ -106,32 +180,163 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- settings actions ----
+
+    fun updateBlacklist(words: Set<String>) {
+        blacklist = words
+        Prefs.setBlacklist(getApplication(), words)
+    }
+
+    fun updateDynamicColor(on: Boolean) {
+        dynamicColor = on
+        Prefs.setDynamicColor(getApplication(), on)
+    }
+
+    fun updateApplyToAll(on: Boolean) {
+        applyToAll = on
+        Prefs.setApplyToAll(getApplication(), on)
+        if (on) persistKindPreferences()
+    }
+
+    fun markHintsSeen() {
+        hintsSeen = true
+        Prefs.markHintsSeen(getApplication())
+    }
+
+    fun updateCustomRules(rules: List<CustomRule>) {
+        customRules = rules
+        Prefs.setCustomRules(getApplication(), rules)
+    }
+
+    fun updateWatchScreenshots(on: Boolean) {
+        watchScreenshots = on
+        Prefs.setWatchScreenshots(getApplication(), on)
+    }
+
+    fun updateLastEmoji(emoji: String) {
+        lastEmoji = emoji
+        Prefs.setLastEmoji(getApplication(), emoji)
+    }
+
+    fun toggleMarkerMode() {
+        markerMode = !markerMode
+        if (markerMode) cropEditMode = false
+    }
+
+    fun toggleWordMap() { showWordMap = !showWordMap }
+
+    /** Check MediaStore for a screenshot newer than the last surfaced one. */
+    fun checkNewScreenshot() {
+        if (!watchScreenshots) return
+        val app = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            val found = runCatching {
+                ScreenshotWatcher.latestSince(app, Prefs.lastShotSeen(app))
+            }.getOrNull() ?: return@launch
+            // Surface once — record its timestamp so it won't nag again.
+            Prefs.setLastShotSeen(app, found.second)
+            pendingScreenshot = found.first
+        }
+    }
+
+    fun openPendingScreenshot() {
+        val uri = pendingScreenshot ?: return
+        pendingScreenshot = null
+        queue = listOf(uri)
+        queuePos = 0
+        loadImage(uri)
+    }
+
+    fun dismissPendingScreenshot() {
+        pendingScreenshot = null
+        // Mark "now" so the same shot isn't surfaced again.
+        Prefs.setLastShotSeen(
+            getApplication(),
+            System.currentTimeMillis() / 1000L,
+        )
+    }
+
+    fun resumeSavedQueue() {
+        val saved = resumableQueue ?: return
+        resumableQueue = null
+        Prefs.clearQueue(getApplication())
+        queue = saved.first
+        queuePos = saved.second
+        loadImage(queue[queuePos])
+    }
+
+    fun dismissSavedQueue() {
+        resumableQueue = null
+        Prefs.clearQueue(getApplication())
+    }
+
+    private fun persistQueue() {
+        val app = getApplication<Application>()
+        if (queue.size > 1 && queuePos < queue.size) {
+            Prefs.saveQueue(app, queue, queuePos)
+        } else {
+            Prefs.clearQueue(app)
+        }
+    }
+
+    // ---- loading / detection ----
+
     fun loadQueue(uris: List<Uri>) {
         if (uris.isEmpty()) return
+        // Persist read grants so a saved queue can resume after process death.
+        // Photo Picker/document URIs support it; best-effort elsewhere.
+        val resolver = getApplication<Application>().contentResolver
+        uris.forEach { uri ->
+            try {
+                resolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            } catch (_: Exception) { }
+        }
         queue = uris
         queuePos = 0
+        persistQueue()
         loadImage(uris.first())
     }
 
     fun nextInQueue() {
         if (!hasNextInQueue) return
+        // Carry over kind-enable prefs when "apply to all" is on.
+        if (applyToAll) persistKindPreferences()
         queuePos += 1
+        persistQueue()
         loadImage(queue[queuePos])
+    }
+
+    private fun persistKindPreferences() {
+        val disabled = RegionKind.entries
+            .filter { kind -> regions.any { it.kind == kind } && regions.none { it.kind == kind && it.enabled } }
+            .map { it.name }
+            .toSet()
+        Prefs.setDisabledKinds(getApplication(), disabled)
     }
 
     fun loadImage(uri: Uri) {
         scanJob?.cancel()
         resetImageState()
+        sourceUri = uri
         screen = Screen.SCANNING
         errorMessage = null
         exportSaved = false
         scanJob = viewModelScope.launch {
             try {
                 scanPhase = ScanPhase.LOADING
+                scanProgress = 0.05f
                 val bitmap = withContext(Dispatchers.IO) {
                     ImageLoader.load(getApplication<Application>().contentResolver, uri)
                 }
                 source = bitmap
+                // Higher-res copy for detectors only — small text survives downsampling.
+                val detBitmap = withContext(Dispatchers.IO) {
+                    runCatching {
+                        ImageLoader.loadForDetection(
+                            getApplication<Application>().contentResolver, uri,
+                        )
+                    }.getOrNull()
+                }
                 val res = getApplication<Application>().resources
                 detectedCrop = withContext(Dispatchers.Default) {
                     AutoCrop.detect(
@@ -140,76 +345,191 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         SystemBars.navigationBarHeight(res),
                     )
                 }
-                runDetection()
+                runDetection(detBitmap)
+                detBitmap?.recycle()
             } catch (e: Exception) {
-                errorMessage = "Could not open this image."
+                if (e is kotlinx.coroutines.CancellationException) throw e
+                errorMessage = getApplication<Application>().getString(R.string.home_error_open)
                 screen = Screen.HOME
             }
         }
     }
 
-    private suspend fun runDetection() {
+    private suspend fun runDetection(detBitmap: Bitmap?) {
         val bitmap = source ?: return
         val crop = cropRect()
-        val workBitmap = withContext(Dispatchers.Default) {
-            if (crop.left == 0 && crop.top == 0 &&
-                crop.width() == bitmap.width && crop.height() == bitmap.height
-            ) {
-                bitmap
+
+        // Detection runs on the higher-res copy when available; every rect is
+        // scaled back to working-bitmap space before offsetting by the crop.
+        val detScale = detBitmap?.let {
+            if (it.width != bitmap.width || it.height != bitmap.height) {
+                bitmap.width.toFloat() / it.width
+            } else 1f
+        } ?: 1f
+        val detSource = detBitmap ?: bitmap
+        val detCrop = Rect(
+            (crop.left / detScale).toInt(),
+            (crop.top / detScale).toInt(),
+            (crop.right / detScale).toInt(),
+            (crop.bottom / detScale).toInt(),
+        )
+        val detWorkCropped = !(detCrop.left == 0 && detCrop.top == 0 &&
+            detCrop.width() == detSource.width && detCrop.height() == detSource.height)
+        val detWork = withContext(Dispatchers.Default) {
+            if (!detWorkCropped) {
+                detSource
             } else {
-                Bitmap.createBitmap(bitmap, crop.left, crop.top, crop.width(), crop.height())
+                Bitmap.createBitmap(detSource, detCrop.left, detCrop.top, detCrop.width(), detCrop.height())
             }
         }
 
-        scanPhase = ScanPhase.OCR
-        val textRegions = withContext(Dispatchers.Default) {
-            runCatching {
-                SensitiveTextDetector.detectRegions(
-                    TextExtractor.extractSpans(workBitmap),
-                    workBitmap.width,
-                    workBitmap.height,
+        val failed = mutableSetOf<ScanPhase>()
+        var progressDone = 0
+        fun bump() {
+            progressDone++
+            scanProgress = 0.15f + 0.8f * progressDone / 4f
+        }
+
+        // OCR / faces / codes run concurrently; entity extraction follows OCR
+        // since it annotates the joined text. Each failure is recorded so the
+        // editor can offer a retry instead of silently showing zero findings.
+        val (spans, faceRects, codes, entityHits) = coroutineScope {
+            val textD = async(Dispatchers.Default) {
+                try {
+                    TextExtractor.extractSpans(detWork)
+                } catch (e: Exception) {
+                    failed += ScanPhase.OCR; emptyList()
+                }
+            }
+            val faceD = async(Dispatchers.Default) {
+                if (!detectFaces) return@async emptyList()
+                try {
+                    FaceDetector.detect(detWork)
+                } catch (e: Exception) {
+                    failed += ScanPhase.FACES; emptyList()
+                }
+            }
+            val codeD = async(Dispatchers.Default) {
+                if (!detectCodes) return@async emptyList()
+                try {
+                    CodeScanner.scan(detWork)
+                } catch (e: Exception) {
+                    failed += ScanPhase.CODES; emptyList()
+                }
+            }
+            val t = textD.await().also { scanPhase = ScanPhase.OCR; bump() }
+            val entityD = async(Dispatchers.Default) {
+                try {
+                    if (t.isEmpty()) emptyList()
+                    else EntityExtractor.detect(SensitiveTextDetector.buildIndex(t).joined)
+                } catch (e: Exception) {
+                    failed += ScanPhase.ENTITIES; emptyList()
+                }
+            }
+            val f = faceD.await().also { scanPhase = ScanPhase.FACES; bump() }
+            val c = codeD.await().also { scanPhase = ScanPhase.CODES; bump() }
+            val e = entityD.await().also { scanPhase = ScanPhase.ENTITIES; bump() }
+            Quad(t, f, c, e)
+        }
+        failedPhases = failed
+
+        val spanIndex = SensitiveTextDetector.buildIndex(spans)
+        val regexRegions = SensitiveTextDetector.regionsFromHits(
+            spanIndex,
+            SensitivePatterns.match(spanIndex.joined) +
+                SensitivePatterns.matchCustom(spanIndex.joined, customRules),
+            detWork.width, detWork.height,
+        )
+        // Entity extraction is assistive: drop hits that overlap regex regions.
+        val entityRegions = SensitiveTextDetector.regionsFromHits(
+            spanIndex, entityHits, detWork.width, detWork.height,
+        ).filter { e -> regexRegions.none { Rect.intersects(e.rect, it.rect) } }
+        val textRegions = regexRegions + entityRegions
+
+        val faceRegions = faceRects.map {
+            RedactRegion.new(it, RegionKind.FACE, detail = "Face")
+        }
+        val codeRegions = codes.map {
+            // QR/barcodes stay scannable through pixelation — blackout by default.
+            RedactRegion.new(
+                it.bounds, RegionKind.CODE,
+                style = RedactStyle.BLACK,
+                detail = if (it.isQr) "QR" else "Barcode",
+            )
+        }
+
+        // Blacklist words from OCR spans.
+        val blacklistRegions = if (blacklist.isEmpty()) emptyList() else {
+            val terms = blacklist.map { it.lowercase() }
+            spans.filter { span ->
+                val t = span.text.lowercase()
+                terms.any { term -> term.length >= 2 && t.contains(term) }
+            }.map { span ->
+                RedactRegion.new(
+                    span.bounds.padded(0.08f, 0.18f, detWork.width, detWork.height),
+                    RegionKind.SECRET, detail = "Blacklist",
                 )
-            }.getOrDefault(emptyList())
+            }
         }
 
-        val faceRegions = if (detectFaces) {
-            scanPhase = ScanPhase.FACES
-            withContext(Dispatchers.Default) {
-                FaceDetector.detect(workBitmap).map {
-                    RedactRegion.new(it, RegionKind.FACE, detail = "Face")
-                }
-            }
-        } else emptyList()
+        fun toFullCoords(r: Rect): Rect = Rect(
+            (r.left * detScale).toInt() + crop.left,
+            (r.top * detScale).toInt() + crop.top,
+            (r.right * detScale).toInt() + crop.left,
+            (r.bottom * detScale).toInt() + crop.top,
+        )
 
-        val codeRegions = if (detectCodes) {
-            scanPhase = ScanPhase.CODES
-            withContext(Dispatchers.Default) {
-                CodeScanner.scan(workBitmap).map {
-                    // QR/barcodes stay scannable through pixelation — blackout by default.
-                    RedactRegion.new(
-                        it.bounds,
-                        RegionKind.CODE,
-                        style = RedactStyle.BLACK,
-                        detail = if (it.isQr) "QR" else "Barcode",
-                    )
-                }
-            }
-        } else emptyList()
-
-        val ox = crop.left
-        val oy = crop.top
-        val all = (textRegions + faceRegions + codeRegions).map { r ->
-            r.copy(rect = Rect(r.rect).apply { offset(ox, oy) })
+        ocrWords = spans.map { span ->
+            span.copy(bounds = toFullCoords(span.bounds))
         }
+
+        var all = (textRegions + faceRegions + codeRegions + blacklistRegions).map { r ->
+            r.copy(rect = toFullCoords(r.rect))
+        }
+
+        // Re-apply kinds the user disabled earlier when "apply to all" is on.
+        if (applyToAll) {
+            val disabled = Prefs.disabledKinds(getApplication())
+            if (disabled.isNotEmpty()) {
+                all = all.map { r ->
+                    if (r.kind.name in disabled) r.copy(enabled = false) else r
+                }
+            }
+        }
+
         regions = dedupe(all)
+        if (detWorkCropped) detWork.recycle()
         undoStack.clear()
         redoStack.clear()
         undoDepth = 0
         redoDepth = 0
         selectedIds = emptySet()
         scanPhase = ScanPhase.DONE
+        scanProgress = 1f
         screen = Screen.EDITOR
         refreshPreview()
+    }
+
+    /** Re-runs just the failed detection stages (or all on demand). */
+    fun retryDetection() {
+        val uri = sourceUri ?: return
+        val src = source ?: return
+        scanJob = viewModelScope.launch {
+            val detBitmap = withContext(Dispatchers.IO) {
+                runCatching {
+                    ImageLoader.loadForDetection(
+                        getApplication<Application>().contentResolver, uri,
+                    )
+                }.getOrNull()
+            }
+            try {
+                screen = Screen.SCANNING
+                scanPhase = ScanPhase.LOADING
+                runDetection(detBitmap)
+            } finally {
+                detBitmap?.recycle()
+            }
+        }
     }
 
     private fun dedupe(list: List<RedactRegion>): List<RedactRegion> {
@@ -266,6 +586,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         selectedIds = regions.map { it.id }.toSet()
     }
 
+    fun selectAllOf(kind: RegionKind) {
+        selectedIds = regions.filter { it.kind == kind }.map { it.id }.toSet()
+    }
+
     fun clearSelection() {
         selectedIds = emptySet()
     }
@@ -313,6 +637,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         regions = regions.map {
             if (it.kind == kind) it.copy(enabled = enabled) else it
         }
+        if (applyToAll) persistKindPreferences()
         refreshPreview()
     }
 
@@ -323,25 +648,138 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         refreshPreview()
     }
 
-    fun addRegion(rect: Rect) {
-        val src = source ?: return
-        val clamped = rect.clampTo(src.width, src.height) ?: return
+    /** One-tap profile: kind → style/strength, applied to every current region. */
+    fun applyPreset(preset: Preset) {
         pushUndo()
-        val region = RedactRegion.new(clamped, RegionKind.MANUAL)
+        val styles: Map<RegionKind, RedactStyle> = when (preset) {
+            Preset.BANKING -> mapOf(
+                RegionKind.CARD to RedactStyle.BLACK,
+                RegionKind.NUMBER to RedactStyle.BLACK,
+                RegionKind.SECRET to RedactStyle.BLACK,
+                RegionKind.EMAIL to RedactStyle.PIXELATE,
+                RegionKind.PHONE to RedactStyle.PIXELATE,
+                RegionKind.NETWORK to RedactStyle.PIXELATE,
+                RegionKind.TRACKING to RedactStyle.BLACK,
+            )
+            Preset.SOCIAL -> mapOf(
+                RegionKind.FACE to RedactStyle.EMOJI,
+                RegionKind.EMAIL to RedactStyle.BLACK,
+                RegionKind.PHONE to RedactStyle.BLACK,
+                RegionKind.ADDRESS to RedactStyle.BLACK,
+                RegionKind.NUMBER to RedactStyle.PIXELATE,
+                RegionKind.DATETIME to RedactStyle.PIXELATE,
+            )
+            Preset.WORK -> mapOf(
+                RegionKind.SECRET to RedactStyle.BLACK,
+                RegionKind.CARD to RedactStyle.BLACK,
+                RegionKind.EMAIL to RedactStyle.PIXELATE,
+                RegionKind.PHONE to RedactStyle.PIXELATE,
+                RegionKind.NETWORK to RedactStyle.BLUR,
+            )
+        }
+        regions = regions.map { r ->
+            val s = styles[r.kind]
+            if (s != null) {
+                r.copy(
+                    styleOverride = s,
+                    emoji = if (s == RedactStyle.EMOJI && r.emoji.isEmpty()) lastEmoji else r.emoji,
+                )
+            } else r
+        }
+        refreshPreview()
+    }
+
+    /** Select every region carrying the same detected text as the selected one. */
+    fun selectSimilar(anchorId: String) {
+        val anchor = regions.firstOrNull { it.id == anchorId } ?: return
+        val needle = anchor.sourceText.trim().lowercase()
+        if (needle.isEmpty()) return
+        val matches = regions.filter {
+            it.sourceText.trim().lowercase() == needle
+        }.map { it.id }.toSet()
+        if (matches.size > 1) selectedIds = matches
+    }
+
+    fun similarCount(id: String): Int {
+        val anchor = regions.firstOrNull { it.id == id } ?: return 0
+        val needle = anchor.sourceText.trim().lowercase()
+        if (needle.isEmpty()) return 0
+        return regions.count { it.sourceText.trim().lowercase() == needle }
+    }
+
+    fun setEmojiFor(ids: Set<String>, emoji: String) {
+        pushUndo()
+        regions = regions.map { if (it.id in ids) it.copy(emoji = emoji) else it }
+        updateLastEmoji(emoji)
+        refreshPreview()
+    }
+
+    /** Freehand stroke → opaque marker region covering the drawn path. */
+    fun addStroke(points: FloatArray) {
+        val src = source ?: return
+        if (points.size < 4) return
+        var minX = Float.MAX_VALUE; var minY = Float.MAX_VALUE
+        var maxX = 0f; var maxY = 0f
+        var i = 0
+        while (i + 1 < points.size) {
+            minX = min(minX, points[i]); maxX = max(maxX, points[i])
+            minY = min(minY, points[i + 1]); maxY = max(maxY, points[i + 1])
+            i += 2
+        }
+        val pad = 30f
+        val bounds = Rect(
+            (minX - pad).toInt(), (minY - pad).toInt(),
+            (maxX + pad).toInt(), (maxY + pad).toInt(),
+        ).clampTo(src.width, src.height) ?: return
+        pushUndo()
+        val region = RedactRegion.new(bounds, RegionKind.MANUAL, detail = "Marker")
+            .copy(strokePoints = points)
         regions = regions + region
         selectedIds = setOf(region.id)
         refreshPreview()
     }
+
+    fun addRegion(rect: Rect, kind: RegionKind = RegionKind.MANUAL, detail: String = "") {
+        val src = source ?: return
+        val clamped = rect.clampTo(src.width, src.height) ?: return
+        pushUndo()
+        val region = RedactRegion.new(clamped, kind, detail = detail)
+        regions = regions + region
+        selectedIds = setOf(region.id)
+        refreshPreview()
+    }
+
+    /** Tap on a detected OCR word → redact just that word. */
+    fun redactWordAt(fullX: Int, fullY: Int): Boolean {
+        if (hitTestRegion(fullX, fullY) != null) return false
+        val span = ocrWords.firstOrNull { it.bounds.contains(fullX, fullY) } ?: return false
+        addRegion(Rect(span.bounds), RegionKind.MANUAL, detail = "Word")
+        return true
+    }
+
+    fun hitTestRegion(fullX: Int, fullY: Int): RedactRegion? =
+        regions.lastOrNull { it.rect.contains(fullX, fullY) }
 
     fun duplicateSelected() {
         val src = source ?: return
         if (selectedIds.isEmpty()) return
         pushUndo()
         val copies = regions.filter { it.id in selectedIds }.map { r ->
-            val w = r.rect.width(); val h = r.rect.height()
+            val w = r.rect.width().coerceAtMost(src.width)
+            val h = r.rect.height().coerceAtMost(src.height)
             val l = (r.rect.left + 24).coerceIn(0, src.width - w)
             val t = (r.rect.top + 24).coerceIn(0, src.height - h)
-            r.copy(id = RedactRegion.new(r.rect, r.kind).id, rect = Rect(l, t, l + w, t + h))
+            val copy = r.copy(
+                id = RedactRegion.new(r.rect, r.kind).id,
+                rect = Rect(l, t, l + w, t + h),
+            )
+            if (r.strokePoints != null) {
+                val ox = (l - r.rect.left).toFloat()
+                val oy = (t - r.rect.top).toFloat()
+                copy.copy(strokePoints = FloatArray(r.strokePoints.size) { i ->
+                    r.strokePoints[i] + if (i % 2 == 0) ox else oy
+                })
+            } else copy
         }
         regions = regions + copies
         selectedIds = copies.map { it.id }.toSet()
@@ -352,10 +790,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val src = source ?: return
         regions = regions.map { r ->
             if (r.id != id) r else {
-                val w = r.rect.width(); val h = r.rect.height()
+                val w = r.rect.width().coerceAtMost(src.width)
+                val h = r.rect.height().coerceAtMost(src.height)
                 val l = (r.rect.left + dx).coerceIn(0, src.width - w)
                 val t = (r.rect.top + dy).coerceIn(0, src.height - h)
-                r.copy(rect = Rect(l, t, l + w, t + h))
+                val moved = r.copy(rect = Rect(l, t, l + w, t + h))
+                // Marker strokes live in image coords — translate with the rect.
+                if (r.strokePoints != null) {
+                    val ox = (l - r.rect.left).toFloat()
+                    val oy = (t - r.rect.top).toFloat()
+                    moved.copy(strokePoints = FloatArray(r.strokePoints.size) { i ->
+                        r.strokePoints[i] + if (i % 2 == 0) ox else oy
+                    })
+                } else moved
             }
         }
     }
@@ -390,22 +837,154 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- rendering ----
 
+    /** Shift a region's rect AND freehand stroke points by (dx, dy). */
+    private fun shiftRegion(r: RedactRegion, dx: Int, dy: Int): RedactRegion {
+        val pts = r.strokePoints ?: return r.copy(
+            rect = Rect(r.rect).apply { offset(dx, dy) },
+        )
+        val shifted = FloatArray(pts.size) { i ->
+            pts[i] + if (i % 2 == 0) dx.toFloat() else dy.toFloat()
+        }
+        return r.copy(
+            rect = Rect(r.rect).apply { offset(dx, dy) },
+            strokePoints = shifted,
+        )
+    }
+
     /** Redacted bitmap in crop space, regions translated. */
     fun renderRedacted(): Bitmap? {
         val src = source ?: return null
-        val crop = cropRect()
+        // Defensive: a stale/edge-case crop outside the bitmap would make
+        // createBitmap throw — inside a coroutine that kills the app.
+        val crop = cropRect().clampTo(src.width, src.height)
+            ?: Rect(0, 0, src.width, src.height)
         val cropped = Bitmap.createBitmap(src, crop.left, crop.top, crop.width(), crop.height())
-        val shifted = regions.map {
-            it.copy(rect = Rect(it.rect).apply { offset(-crop.left, -crop.top) })
-        }
+        val shifted = regions.map { shiftRegion(it, -crop.left, -crop.top) }
         return ImageRedactor.render(cropped, shifted, defaultStyle, defaultStrength)
+    }
+
+    /**
+     * Preview render at display resolution. Redactions burn at ~1400px then
+     * upscale back to crop space, so canvas coordinates/overlays stay exact —
+     * only the per-region pixel math gets ~4x cheaper per refresh.
+     */
+    private fun renderPreviewBitmap(): Bitmap? {
+        val src = source ?: return null
+        val crop = cropRect().clampTo(src.width, src.height)
+            ?: Rect(0, 0, src.width, src.height)
+        val scale = min(1f, PREVIEW_MAX_DIM.toFloat() / max(crop.width(), crop.height()))
+        if (scale >= 1f) return renderRedacted()
+        val cropped = Bitmap.createBitmap(src, crop.left, crop.top, crop.width(), crop.height())
+        val pw = (crop.width() * scale).toInt().coerceAtLeast(1)
+        val ph = (crop.height() * scale).toInt().coerceAtLeast(1)
+        val work = Bitmap.createScaledBitmap(cropped, pw, ph, true)
+        cropped.recycle()
+        val shifted = regions.map { r ->
+            shiftRegion(
+                r, -crop.left, -crop.top,
+            ).let { sh ->
+                sh.copy(
+                    rect = Rect(
+                        (sh.rect.left * scale).toInt(),
+                        (sh.rect.top * scale).toInt(),
+                        (sh.rect.right * scale).toInt(),
+                        (sh.rect.bottom * scale).toInt(),
+                    ),
+                    strokePoints = sh.strokePoints?.let { p ->
+                        FloatArray(p.size) { p[it] * scale }
+                    },
+                )
+            }
+        }
+        val small = ImageRedactor.render(work, shifted, defaultStyle, defaultStrength)
+        if (small !== work) work.recycle()
+        val full = Bitmap.createScaledBitmap(small, crop.width(), crop.height(), true)
+        if (full !== small) small.recycle()
+        return full
+    }
+
+    /** Un-redacted crop for the hold-to-compare peek on the export screen. */
+    fun renderOriginal(): Bitmap? {
+        val src = source ?: return null
+        val crop = cropRect().clampTo(src.width, src.height)
+            ?: Rect(0, 0, src.width, src.height)
+        val cropped = Bitmap.createBitmap(src, crop.left, crop.top, crop.width(), crop.height())
+        return runCatching { Beautifier.render(cropped, beautify) }
+            .getOrElse { cropped }
+    }
+
+    /**
+     * Re-scans a rendered image for surviving barcodes. Any still-decodable
+     * code overlapping a CODE region is upgraded to blackout — pixelation is
+     * not a safe redaction for structured codes.
+     * Returns the upgraded regions list (same list when nothing leaks).
+     */
+    suspend fun verifyCodes(list: List<RedactRegion>, renderedCrop: Bitmap): List<RedactRegion> {
+        val crop = cropRect()
+        val surviving = try {
+            CodeScanner.scan(renderedCrop)
+        } catch (e: Exception) {
+            return list
+        }
+        if (surviving.isEmpty()) return list
+        val survivingFull = surviving.map {
+            Rect(it.bounds).apply { offset(crop.left, crop.top) }
+        }
+        // Auto-fix: enabled non-blackout CODE regions that still decode.
+        val leakyIds = list.filter { r ->
+            r.kind == RegionKind.CODE && r.enabled &&
+                (r.styleOverride ?: defaultStyle) != RedactStyle.BLACK &&
+                survivingFull.any { Rect.intersects(it, r.rect) }
+        }.map { it.id }.toSet()
+        val upgraded = list.map {
+            if (it.id in leakyIds) it.copy(styleOverride = RedactStyle.BLACK) else it
+        }
+        // Exposed: a decodable code left uncovered or under a disabled region —
+        // we can't silently fix those, but the "verified clean" badge must not show.
+        val coveredIds = upgraded.filter { r ->
+            r.kind == RegionKind.CODE && r.enabled &&
+                (r.styleOverride ?: defaultStyle) == RedactStyle.BLACK
+        }
+        val exposed = survivingFull.count { code ->
+            coveredIds.none { Rect.intersects(code, it.rect) }
+        }
+        val app = getApplication<Application>()
+        verifyNotice = buildString {
+            if (leakyIds.isNotEmpty()) {
+                append(app.getString(R.string.verify_notice, leakyIds.size))
+            }
+            if (exposed > 0) {
+                if (isNotEmpty()) append(' ')
+                append(app.getString(R.string.verify_exposed, exposed))
+            }
+        }.ifEmpty { null }
+        return upgraded
+    }
+
+    /** Render + post-verify pass. Mutates regions if a code leaks. */
+    suspend fun renderVerified(): Bitmap? {
+        val redacted = renderRedacted() ?: return null
+        val upgraded = verifyCodes(regions, redacted)
+        if (upgraded !== regions) {
+            regions = upgraded
+            redacted.recycle()
+            return renderRedacted()
+        }
+        return redacted
     }
 
     fun refreshPreview() {
         if (!livePreview) return
         previewJob?.cancel()
         previewJob = viewModelScope.launch(Dispatchers.Default) {
-            renderedPreview = renderRedacted()
+            // Coalesce bursts (slider drags, region nudges) into one render;
+            // any render failure degrades to the plain image rather than
+            // killing the app through an uncaught coroutine exception.
+            delay(40)
+            // Don't recycle the outgoing preview here — a compose frame may
+            // still be drawing it (Canvas holds the Bitmap until draw pass).
+            // Unreferenced previews are reclaimed by GC; recycle() races draws.
+            renderedPreview = runCatching { renderPreviewBitmap() }.getOrNull()
         }
     }
 
@@ -423,8 +1002,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun renderFinal() {
         finalRenderJob?.cancel()
         finalRenderJob = viewModelScope.launch(Dispatchers.Default) {
-            val redacted = renderRedacted() ?: return@launch
-            renderedFinal = Beautifier.render(redacted, beautify)
+            verifyNotice = null
+            renderedFinal = runCatching {
+                val redacted = renderVerified() ?: return@runCatching null
+                Beautifier.render(redacted, beautify)
+            }.getOrNull()
+            if (renderedFinal == null) {
+                errorMessage = getApplication<Application>().getString(R.string.render_failed)
+            }
         }
     }
 
@@ -437,9 +1022,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val bmp = renderedFinal ?: return false
         exporting = true
         return try {
-            Exporter.saveToGallery(context, bmp) != null
+            Exporter.saveToGallery(context, bmp, exportFormat) != null
         } catch (e: Exception) {
-            errorMessage = "Save failed: ${e.message}"
+            errorMessage = getApplication<Application>().getString(R.string.save_failed) + ": ${e.message}"
             false
         } finally {
             exporting = false
@@ -448,7 +1033,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     suspend fun shareUri(context: android.content.Context): Uri? {
         val bmp = renderedFinal ?: return null
-        return runCatching { Exporter.shareUri(context, bmp) }.getOrNull()
+        return runCatching { Exporter.shareUri(context, bmp, exportFormat) }.getOrNull()
     }
 
     private fun resetImageState() {
@@ -456,9 +1041,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         selectedIds = emptySet()
         detectedCrop = null
         cropEditMode = false
+        markerMode = false
+        showWordMap = false
         renderedPreview = null
         renderedFinal = null
         exportSaved = false
+        failedPhases = emptySet()
+        ocrWords = emptyList()
+        verifyNotice = null
         undoStack.clear()
         redoStack.clear()
         undoDepth = 0
@@ -468,8 +1058,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun reset() {
         scanJob?.cancel()
         source = null
+        sourceUri = null
         queue = emptyList()
         queuePos = 0
+        Prefs.clearQueue(getApplication())
         resetImageState()
         errorMessage = null
         screen = Screen.HOME

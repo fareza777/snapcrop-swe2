@@ -22,15 +22,23 @@ object ImageRedactor {
         val result = bitmap.copy(Bitmap.Config.ARGB_8888, true)
         if (enabled.isEmpty()) return result
         val canvas = Canvas(result)
-        // Blackout last so cosmetic overlaps can never weaken opaque bars.
-        enabled.sortedBy { if ((it.styleOverride ?: defaultStyle) == RedactStyle.BLACK) 1 else 0 }
-            .forEach { region ->
+        // Blackout/cloak/marker last so cosmetic overlaps can never weaken them.
+        enabled.sortedBy {
+            val s = it.styleOverride ?: defaultStyle
+            if (it.strokePoints != null || s == RedactStyle.BLACK ||
+                s == RedactStyle.CLOAK || s == RedactStyle.EMOJI
+            ) 1 else 0
+        }.forEach { region ->
                 val strength = (region.strengthOverride ?: defaultStrength)
                     .coerceIn(MIN_STRENGTH, MAX_STRENGTH)
-                when (region.styleOverride ?: defaultStyle) {
+                if (region.strokePoints != null) {
+                    strokeInPlace(result, canvas, region.strokePoints, strength)
+                } else when (region.styleOverride ?: defaultStyle) {
                     RedactStyle.BLACK -> opaqueInPlace(result, region.rect)
                     RedactStyle.PIXELATE -> pixelateInPlace(result, canvas, region.rect, strength)
                     RedactStyle.BLUR -> blurInPlace(result, canvas, region.rect, strength)
+                    RedactStyle.CLOAK -> cloakInPlace(result, canvas, region)
+                    RedactStyle.EMOJI -> emojiInPlace(result, canvas, region)
                 }
             }
         return result
@@ -38,6 +46,12 @@ object ImageRedactor {
 
     const val MIN_STRENGTH = 0.5f
     const val MAX_STRENGTH = 4f
+
+    fun pixelateBlockSize(strength: Float): Int =
+        (12 * strength.coerceIn(MIN_STRENGTH, MAX_STRENGTH)).toInt().coerceIn(4, 96)
+
+    fun blurDivisor(strength: Float): Int =
+        (24 * strength.coerceIn(MIN_STRENGTH, MAX_STRENGTH)).toInt().coerceIn(6, 160)
 
     private fun opaqueInPlace(bitmap: Bitmap, rect: Rect, color: Int = Color.BLACK) {
         val safe = rect.clippedTo(bitmap) ?: return
@@ -49,7 +63,7 @@ object ImageRedactor {
 
     private fun pixelateInPlace(result: Bitmap, canvas: Canvas, rect: Rect, strength: Float) {
         val safe = rect.clippedTo(result) ?: return
-        val blockSize = (12 * strength).toInt().coerceIn(4, 96)
+        val blockSize = pixelateBlockSize(strength)
         if (safe.width() < 2 || safe.height() < 2) return
         if (safe.width() < blockSize * 2 || safe.height() < blockSize * 2) {
             solidFill(result, canvas, safe)
@@ -61,7 +75,7 @@ object ImageRedactor {
     private fun blurInPlace(result: Bitmap, canvas: Canvas, rect: Rect, strength: Float) {
         val safe = rect.clippedTo(result) ?: return
         if (safe.width() < 2 || safe.height() < 2) return
-        scaleRegion(result, canvas, safe, divisor = (24 * strength).toInt().coerceIn(6, 160),
+        scaleRegion(result, canvas, safe, divisor = blurDivisor(strength),
             filterUpscale = true)
     }
 
@@ -101,6 +115,75 @@ object ImageRedactor {
         )
         return clipped.takeIf { it.width() > 0 && it.height() > 0 }
     }
+
+    /** Freehand marker — a thick opaque polyline following the user's stroke. */
+    private fun strokeInPlace(result: Bitmap, canvas: Canvas, points: FloatArray, strength: Float) {
+        if (points.size < 4) {
+            // Degenerate tap — just cover the bounding area.
+            return
+        }
+        val width = (26f * strength.coerceIn(MIN_STRENGTH, MAX_STRENGTH))
+            .coerceIn(10f, result.width * 0.08f)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            style = Paint.Style.STROKE
+            strokeWidth = width
+            strokeCap = Paint.Cap.ROUND
+            strokeJoin = Paint.Join.ROUND
+        }
+        val path = android.graphics.Path()
+        path.moveTo(points[0], points[1])
+        var i = 2
+        while (i + 1 < points.size) {
+            path.lineTo(points[i], points[i + 1])
+            i += 2
+        }
+        canvas.drawPath(path, paint)
+    }
+
+    /**
+     * Cloak — wipe the region to its sampled surrounding colour, then draw a
+     * masked substitute ("j•••@c•••.com") in place. Reads as real content.
+     */
+    private fun cloakInPlace(result: Bitmap, canvas: Canvas, region: RedactRegion) {
+        val safe = region.rect.clippedTo(result) ?: return
+        solidFill(result, canvas, safe)
+        val replacement = Cloaker.substitute(
+            region.kind,
+            region.sourceText.ifEmpty { region.detail },
+        )
+        if (replacement.isBlank()) return
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.argb(255, 60, 66, 74)
+            textAlign = Paint.Align.CENTER
+            isFakeBoldText = false
+        }
+        // Fit text to the rect: start at 80% of height, shrink if it overflows.
+        var size = safe.height() * 0.72f
+        paint.textSize = size
+        val w = paint.measureText(replacement)
+        if (w > safe.width() * 0.94f && w > 0) {
+            size *= (safe.width() * 0.94f) / w
+            paint.textSize = size
+        }
+        val baseline = safe.exactCenterY() - (paint.descent() + paint.ascent()) / 2f
+        canvas.drawText(replacement, safe.exactCenterX(), baseline, paint)
+    }
+
+    /** Emoji cover — centred, scaled to the region. */
+    private fun emojiInPlace(result: Bitmap, canvas: Canvas, region: RedactRegion) {
+        val safe = region.rect.clippedTo(result) ?: return
+        solidFill(result, canvas, safe)
+        val emoji = region.emoji.ifEmpty { DEFAULT_EMOJI }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            textAlign = Paint.Align.CENTER
+            textSize = minOf(safe.width(), safe.height()) * 0.82f
+        }
+        val baseline = safe.exactCenterY() - (paint.descent() + paint.ascent()) / 2f
+        canvas.drawText(emoji, safe.exactCenterX(), baseline, paint)
+    }
+
+    const val DEFAULT_EMOJI = "\uD83D\uDE0A" // 😊
 
     /** Average-colour fill so tiny regions are still fully obscured. */
     private fun solidFill(source: Bitmap, canvas: Canvas, rect: Rect) {

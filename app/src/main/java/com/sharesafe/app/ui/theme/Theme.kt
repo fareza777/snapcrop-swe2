@@ -3,6 +3,8 @@ package com.sharesafe.app.ui.theme
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Brush
@@ -61,9 +63,21 @@ private val LightColors = lightColorScheme(
 )
 
 @Composable
-fun ShareSafeTheme(dark: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
+fun ShareSafeTheme(
+    dark: Boolean = isSystemInDarkTheme(),
+    dynamicColor: Boolean = false,
+    content: @Composable () -> Unit,
+) {
+    val scheme = when {
+        dynamicColor && android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S -> {
+            val ctx = androidx.compose.ui.platform.LocalContext.current
+            if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
+        }
+        dark -> DarkColors
+        else -> LightColors
+    }
     MaterialTheme(
-        colorScheme = if (dark) DarkColors else LightColors,
+        colorScheme = scheme,
         content = content,
     )
 }
@@ -80,4 +94,7 @@ fun regionColor(kind: com.sharesafe.app.core.RegionKind): Color = when (kind) {
     com.sharesafe.app.core.RegionKind.CODE -> Color(0xFFF472D0)
     com.sharesafe.app.core.RegionKind.FACE -> Color(0xFFB197FC)
     com.sharesafe.app.core.RegionKind.MANUAL -> Color(0xFFFFD43B)
+    com.sharesafe.app.core.RegionKind.DATETIME -> Color(0xFF94D82D)
+    com.sharesafe.app.core.RegionKind.TRACKING -> Color(0xFFFF8787)
+    com.sharesafe.app.core.RegionKind.CUSTOM -> Color(0xFF38BDF8)
 }

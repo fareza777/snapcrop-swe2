@@ -2,12 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- No permissions required: Photo Picker + MediaStore inserts need none on API 29+.
-         ML Kit inference runs fully on-device; strip the network bits that
-         Google Datatransport (bundled with ML Kit) injects so the app truly
-         cannot upload anything. -->
+    <!-- No permissions required by default: Photo Picker + MediaStore inserts
+         need none on API 29+. ML Kit inference runs fully on-device; strip the
+         network bits that Google Datatransport (bundled with ML Kit) injects
+         so the app truly cannot upload anything.
+         The optional screenshot watcher (off by default) requests media read
+         only when the user enables it in Settings. -->
     <uses-permission android:name="android.permission.INTERNET" tools:node="remove" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
 
     <application
         android:allowBackup="true"

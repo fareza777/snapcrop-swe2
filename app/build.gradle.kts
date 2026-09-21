@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
@@ -13,12 +14,45 @@ android {
         applicationId = "com.sharesafe.app"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 4
+        versionName = "1.2"
+    }
+
+    // Release signing: drop keystore.properties next to settings.gradle.kts.
+    // Falls back to unsigned when absent so CI/dev builds keep working.
+    val keystoreProps = Properties().apply {
+        val f = rootProject.file("keystore.properties")
+        if (f.exists()) f.inputStream().use { load(it) }
+    }
+    val hasSigning = keystoreProps.getProperty("storeFile") != null
+
+    signingConfigs {
+        if (hasSigning) {
+            create("release") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
+
+    // Per-ABI APK splits for direct sideloading (universal APK stays too).
+    // Play should ship the AAB instead — it splits automatically.
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a", "x86_64")
+            isUniversalApk = true
+        }
     }
 
     buildTypes {
         release {
+            if (hasSigning) signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -48,6 +82,15 @@ kotlin {
     }
 }
 
+// Robolectric downloads its android-all jar at test runtime; route it through
+// the same Maven Central mirror the project uses (repo1 is rate-limited here).
+tasks.withType<Test>().configureEach {
+    systemProperty(
+        "robolectric.dependency.repo.url",
+        "https://cache-redirector.jetbrains.com/maven-central",
+    )
+}
+
 dependencies {
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
@@ -62,8 +105,10 @@ dependencies {
     implementation(libs.mlkit.textrecognition)
     implementation(libs.mlkit.facedetection)
     implementation(libs.mlkit.barcodescanning)
+    implementation(libs.mlkit.entityextraction)
     implementation(libs.androidx.exifinterface)
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
 }
