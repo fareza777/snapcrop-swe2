@@ -962,9 +962,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             // any render failure degrades to the plain image rather than
             // killing the app through an uncaught coroutine exception.
             delay(40)
-            val old = renderedPreview
+            // Don't recycle the outgoing preview here — a compose frame may
+            // still be drawing it (Canvas holds the Bitmap until draw pass).
+            // Unreferenced previews are reclaimed by GC; recycle() races draws.
             renderedPreview = runCatching { renderPreviewBitmap() }.getOrNull()
-            if (renderedPreview != null && old != null && old != renderedPreview) old.recycle()
         }
     }
 

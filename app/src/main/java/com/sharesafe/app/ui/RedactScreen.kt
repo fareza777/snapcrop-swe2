@@ -1144,13 +1144,15 @@ private fun RedactCanvas(
         val s = totalScale()
         val o = origin()
 
-        drawImage(
-            image = bitmap.asImageBitmap(),
-            srcOffset = IntOffset.Zero,
-            srcSize = IntSize(bitmap.width, bitmap.height),
-            dstOffset = IntOffset(o.x.roundToInt(), o.y.roundToInt()),
-            dstSize = IntSize((imgW * s).roundToInt(), (imgH * s).roundToInt()),
-        )
+        if (!bitmap.isRecycled) {
+            drawImage(
+                image = bitmap.asImageBitmap(),
+                srcOffset = IntOffset.Zero,
+                srcSize = IntSize(bitmap.width, bitmap.height),
+                dstOffset = IntOffset(o.x.roundToInt(), o.y.roundToInt()),
+                dstSize = IntSize((imgW * s).roundToInt(), (imgH * s).roundToInt()),
+            )
+        }
 
         if (cropEdit) {
             val crop = cropDraft ?: vm.cropRect()
